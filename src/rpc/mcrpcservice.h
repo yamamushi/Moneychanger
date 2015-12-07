@@ -40,9 +40,6 @@ public Q_SLOTS:
     QJsonValue createNymLegacy(QString Username, QString APIKey,
                          int KeySize, QString NymIDSource,
                          QString AltLocation);
-    QJsonValue createNymEcdsa(QString Username, QString APIKey,
-                              QString NymIDSource,
-                              QString AltLocation);
     QJsonValue getNymActiveCronItemIDs(QString Username, QString APIKey,
                                        QString NymID, QString NotaryID);
     QJsonValue getActiveCronItem(QString Username, QString APIKey,
@@ -71,6 +68,9 @@ public Q_SLOTS:
     QJsonValue getNymChildCredentialContents(QString Username, QString APIKey,
                                            QString NymID, QString MasterCredID,
                                            QString SubCredID);
+    QJsonValue addChildCredentialLegacy(QString Username, QString APIKey,
+                                QString NymID, QString MasterCredID,
+                                int KeySize);
     QJsonValue revokeChildcredential(QString Username, QString APIKey,
                                    QString NymID, QString MasterCredID,
                                    QString SubCredID);
@@ -909,20 +909,20 @@ public Q_SLOTS:
     QJsonValue recordListRetrieve(QString Username, QString APIKey,
                                   int BeginIndex, int EndIndex);
 
-    QJsonValue setDefaultNym(QString Username, QString APIKey,
-                             QString nym_id, QString nym_name);
+    QJsonValue setDefaultNym(QString nym_id, QString nym_name,
+                             QString Username, QString APIKey);
     QJsonValue getDefaultNym(QString Username, QString APIKey);
 
-    QJsonValue setDefaultAccount(QString Username, QString APIKey,
-                                 QString AccountID, QString AccountName);
+    QJsonValue setDefaultAccount(QString AccountID, QString AccountName,
+                                 QString Username, QString APIKey);
     QJsonValue getDefaultAccount(QString Username, QString APIKey);
 
-    QJsonValue setDefaultServer(QString Username, QString APIKey,
-                                QString NotaryID, QString ServerName);
+    QJsonValue setDefaultServer(QString NotaryID, QString ServerName,
+                                QString Username, QString APIKey);
     QJsonValue getDefaultServer(QString Username, QString APIKey);
 
-    QJsonValue setDefaultAsset(QString Username, QString APIKey,
-                               QString AssetID, QString AssetName);
+    QJsonValue setDefaultAsset(QString AssetID, QString AssetName,
+                               QString Username, QString APIKey);
     QJsonValue getDefaultAsset(QString Username, QString APIKey);
 
     QJsonValue isValidID(QString ID, QString Username, QString APIKey);

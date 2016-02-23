@@ -11,6 +11,7 @@
 
 #include <core/moneychanger.hpp>
 #include <core/handlers/contacthandler.hpp>
+#include <core/handlers/focuser.h>
 
 #include <opentxs/client/OTAPI.hpp>
 #include <opentxs/client/OTAPI_Exec.hpp>
@@ -67,12 +68,12 @@ bool MTRequestDlg::sendChequeLowLevel(int64_t amount, QString toNymId, QString f
     int64_t SignedAmount = amount;
     int64_t trueAmount   = isInvoice ? (SignedAmount*(-1)) : SignedAmount;
     // ------------------------------------------------------------
-    qDebug() << QString("Sending %1:\n Server:'%2'\n Nym:'%3'\n Acct:'%4'\n ToNym:'%5'\n Amount:'%6'\n Note:'%7'").
-                arg(nsChequeType).arg(QString::fromStdString(str_NotaryID)).arg(QString::fromStdString(str_fromNymId)).
-                arg(fromAcctId).arg(toNymId).arg(SignedAmount).arg(note);
+//    qDebug() << QString("Sending %1:\n Server:'%2'\n Nym:'%3'\n Acct:'%4'\n ToNym:'%5'\n Amount:'%6'\n Note:'%7'").
+//                arg(nsChequeType).arg(QString::fromStdString(str_NotaryID)).arg(QString::fromStdString(str_fromNymId)).
+//                arg(fromAcctId).arg(toNymId).arg(SignedAmount).arg(note);
     // ------------------------------------------------------------
-    time_t tFrom = opentxs::OTAPI_Wrap::It()->GetTime();
-    time_t tTo   = tFrom + DEFAULT_CHEQUE_EXPIRATION;
+    time64_t tFrom = opentxs::OTAPI_Wrap::It()->GetTime();
+    time64_t tTo   = tFrom + DEFAULT_CHEQUE_EXPIRATION;
     // ------------------------------------------------------------
     std::string strCheque = opentxs::OTAPI_Wrap::It()->WriteCheque(str_NotaryID, trueAmount, tFrom, tTo,
                                                     str_fromAcctId, str_fromNymId, note.toStdString(),
@@ -159,7 +160,7 @@ bool MTRequestDlg::requestFunds(QString memo, QString qstr_amount)
     }
     // ----------------------------------------------------
     if (memo.isEmpty())
-        memo = tr("From the desktop client. (Empty memo.)");
+        memo = tr("(Memo was empty.)");
     // ----------------------------------------------------
     if (qstr_amount.isEmpty())
         qstr_amount = QString("0");
@@ -319,7 +320,7 @@ void MTRequestDlg::on_toButton_clicked()
     // -----------------------------------------------
     if (theChooser.exec() == QDialog::Accepted)
     {
-        qDebug() << QString("SELECT was clicked for AcctID: %1").arg(theChooser.m_qstrCurrentID);
+//      qDebug() << QString("SELECT was clicked for AcctID: %1").arg(theChooser.m_qstrCurrentID);
 
         if (!theChooser.m_qstrCurrentID.isEmpty())
         {
@@ -342,7 +343,7 @@ void MTRequestDlg::on_toButton_clicked()
     }
     else
     {
-      qDebug() << "CANCEL was clicked";
+//      qDebug() << "CANCEL was clicked";
     }
     // -----------------------------------------------
     m_myAcctId = QString("");
@@ -399,7 +400,7 @@ void MTRequestDlg::on_fromButton_clicked()
     // -----------------------------------------------
     if (theChooser.exec() == QDialog::Accepted)
     {
-        qDebug() << QString("SELECT was clicked for ID: %1").arg(theChooser.m_qstrCurrentID);
+//        qDebug() << QString("SELECT was clicked for ID: %1").arg(theChooser.m_qstrCurrentID);
 
         // If not the same as before, then we have to choose a NymID based on the selected Contact.
         //
@@ -486,7 +487,7 @@ void MTRequestDlg::on_fromButton_clicked()
     }
     else
     {
-      qDebug() << "CANCEL was clicked";
+//      qDebug() << "CANCEL was clicked";
     }
     // -----------------------------------------------
 }
@@ -500,6 +501,12 @@ void MTRequestDlg::dialog()
 
     if (!already_init)
     {
+        if (!Moneychanger::It()->expertMode())
+        {
+            ui->toolButton->setVisible(false);
+            ui->toolButtonManageAccts->setVisible(false);
+        }
+        // ---------------------------------------
         connect(this,               SIGNAL(balancesChanged()),
                 Moneychanger::It(), SLOT  (onBalancesChanged()));
         // ---------------------------------------
@@ -591,7 +598,9 @@ void MTRequestDlg::dialog()
         already_init = true;
     }
 
-    show();
+    Focuser f(this);
+    f.show();
+    f.focus();
 }
 
 

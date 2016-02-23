@@ -20,6 +20,7 @@ VERSION     = 0.0.1
 QT         += core gui sql network widgets
 
 DEFINES    += "OT_ZMQ_MODE=1"
+DEFINES    += "EXPORT="
 
 #-------------------------------------------------
 # Common Settings
@@ -29,15 +30,16 @@ include(../common.pri)
 #-------------------------------------------------
 # Source
 
-
 #PRECOMPILED_HEADER = $${SOLUTION_DIR}../src/core/stable.hpp
 
+include($${SOLUTION_DIR}../project/QtQREncoder/QtQREncoder.pri)
+include($${SOLUTION_DIR}../project/qjsonrpc/qjsonrpc.pri)
 include($${SOLUTION_DIR}../src/core/core.pri)
 include($${SOLUTION_DIR}../src/gui/gui.pri)
+include($${SOLUTION_DIR}../src/rpc/rpc.pri)
 include($${SOLUTION_DIR}../src/bitcoin/bitcoin.pri)
 include($${SOLUTION_DIR}../src/namecoin/namecoin.pri)
 include($${SOLUTION_DIR}../src/quazip/quazip.pri)
-
 
 #-------------------------------------------------
 # Package Config
@@ -45,6 +47,7 @@ include($${SOLUTION_DIR}../src/quazip/quazip.pri)
 # MAC AND LINUX:
 unix:{
     PKGCONFIG += opentxs
+    PKGCONFIG += libzmq
 }
 
 
@@ -74,6 +77,9 @@ mac:{
 #-------------------------------------------------
 # Linked Libs
 
+LIBS += -lopentxs-proto
+LIBS += -lprotobuf-lite
+
 # MAC AND LINUX:
 unix: {
 
@@ -86,15 +92,26 @@ unix: {
     LIBS += -L$${OUT_PWD}/../jsoncpp
     LIBS += -ljsoncpp
 
+    INCLUDEPATH += $${PWD}/../qjsonrpc/src
+    LIBS += -L$${OUT_PWD}/../qjsonrpc/src
+    LIBS += -lqjsonrpc
+
+    INCLUDEPATH += $${PWD}/../QtQREncoder
+    INCLUDEPATH += $${PWD}/../QtQREncoder/qrencode
+    LIBS += -L$${OUT_PWD}/../QtQREncoder
+    LIBS += -lqrencode
+
     LIBS += -L$${OUT_PWD}/../nmcrpc
     LIBS += -lnmcrpc
-    
-    LIBS += -L/usr/local/lib
 
     LIBS += -L$${OUT_PWD}/../quazip
     LIBS += -lquazip -lz
 
+
     mac:{
+
+        QMAKE_LFLAGS_SONAME  = -Wl,-install_name,@executable_path/../Frameworks/
+
         !contains(MAC_OS_VERSION, 10.9):!contains(MAC_OS_VERSION, 10.10):{
             # if not on Mavericks
             LIBS += -lboost_system-mt
@@ -102,7 +119,10 @@ unix: {
             LIBS += -lboost_chrono-mt
             LIBS += -lboost_atomic-mt
         }
-    } 
+        LIBS += -L/usr/local/lib/
+        LIBS += -framework Cocoa -framework CoreFoundation
+    }
+
     # LINUX:
     else: {
         lessThan(GCC_VERSION, 4.7):{
@@ -115,6 +135,7 @@ unix: {
     }
 
     LIBS += -lzmq   # needed for sampleescrowserverzmq
+
 }
 
 win32: {
@@ -147,6 +168,8 @@ win32: {
 
     LIBS += bitcoin-api.lib
     LIBS += jsoncpp.lib
+    LIBS += qjsonrpc.lib
+    LIBS += qrencode.lib
     LIBS += curl.lib
     LIBS += nmcrpc.lib
     LIBS += quazip.lib
@@ -159,6 +182,7 @@ win32: {
 
 
 
+
 # MAC AND LINUX:
 # need to put -ldl last.
 unix:{
@@ -167,7 +191,6 @@ unix:{
     LIBS += -lxmlrpc
     LIBS += -lxmlrpc++
     LIBS += -lxmlrpc_client++
-
 }
 
 

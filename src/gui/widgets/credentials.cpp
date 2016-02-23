@@ -86,7 +86,7 @@ void MTCredentials::on_treeWidget_itemSelectionChanged()
         QString qstrNymID  = pParent->text(1);
         QString qstrCredID = pItem  ->text(1);
         // --------------------------------
-        const std::string str_contents = opentxs::OTAPI_Wrap::It()->GetNym_CredentialContents(qstrNymID .toStdString(),
+        const std::string str_contents = opentxs::OTAPI_Wrap::It()->GetNym_MasterCredentialContents(qstrNymID .toStdString(),
                                                                                qstrCredID.toStdString());
         // --------------------------------
         ui->label->setText(tr("Master Credential Contents:"));
@@ -99,7 +99,7 @@ void MTCredentials::on_treeWidget_itemSelectionChanged()
         QString qstrCredID = pParent      ->text(1);
         QString qstrSubID  = pItem        ->text(1);
         // --------------------------------
-        const std::string str_contents = opentxs::OTAPI_Wrap::It()->GetNym_SubCredentialContents(qstrNymID .toStdString(),
+        const std::string str_contents = opentxs::OTAPI_Wrap::It()->GetNym_ChildCredentialContents(qstrNymID .toStdString(),
                                                                                   qstrCredID.toStdString(),
                                                                                   qstrSubID .toStdString());
         // --------------------------------
@@ -146,7 +146,7 @@ void MTCredentials::refresh(QStringList & qstrlistNymIDs)
             // ---------------------------------------
             // Insert Nym into Tree.
             //
-            QTreeWidgetItem * topLevel = new QTreeWidgetItem();
+            QTreeWidgetItem * topLevel = new QTreeWidgetItem;
             // ------------------------------------------
             topLevel->setText(0, qstrNymName);
             topLevel->setText(1, qstrNymID);
@@ -156,11 +156,11 @@ void MTCredentials::refresh(QStringList & qstrlistNymIDs)
             // ------------------------------------------
             // Next: any credentials under this Nym?
             //
-            const int32_t nCountCredentials = opentxs::OTAPI_Wrap::It()->GetNym_CredentialCount(str_nym_id);
+            const int32_t nCountCredentials = opentxs::OTAPI_Wrap::It()->GetNym_MasterCredentialCount(str_nym_id);
 
             for (int nCred = 0; nCred < nCountCredentials; ++nCred)
             {
-                std::string str_cred_id = opentxs::OTAPI_Wrap::It()->GetNym_CredentialID(str_nym_id, nCred);
+                std::string str_cred_id = opentxs::OTAPI_Wrap::It()->GetNym_MasterCredentialID(str_nym_id, nCred);
 
                 if (str_cred_id.empty()) // should never happen.
                     continue;
@@ -169,7 +169,7 @@ void MTCredentials::refresh(QStringList & qstrlistNymIDs)
                 // ---------------------------------------
                 // Add the credential ID to the tree.
                 //
-                QTreeWidgetItem * cred_item = new QTreeWidgetItem();
+                QTreeWidgetItem * cred_item = new QTreeWidgetItem;
                 // ---------------------------------------
                 cred_item->setText(0, tr("Master Credential"));
                 cred_item->setText(1, qstrCredID);
@@ -184,11 +184,11 @@ void MTCredentials::refresh(QStringList & qstrlistNymIDs)
                 // ---------------------------------------
                 // Next: any subcredentials under this credential?
                 //
-                const int32_t nCountSubcred = opentxs::OTAPI_Wrap::It()->GetNym_SubcredentialCount(str_nym_id, str_cred_id);
+                const int32_t nCountSubcred = opentxs::OTAPI_Wrap::It()->GetNym_ChildCredentialCount(str_nym_id, str_cred_id);
 
                 for (int nSubcred = 0; nSubcred < nCountSubcred; ++nSubcred)
                 {
-                    std::string str_sub_cred_id = opentxs::OTAPI_Wrap::It()->GetNym_SubCredentialID(str_nym_id, str_cred_id, nSubcred);
+                    std::string str_sub_cred_id = opentxs::OTAPI_Wrap::It()->GetNym_ChildCredentialID(str_nym_id, str_cred_id, nSubcred);
 
                     if (str_sub_cred_id.empty()) // should never happen.
                         continue;
@@ -197,7 +197,7 @@ void MTCredentials::refresh(QStringList & qstrlistNymIDs)
                     // ---------------------------------------
                     // Add the subcredential ID to the tree.
                     //
-                    QTreeWidgetItem * sub_cred_item = new QTreeWidgetItem();
+                    QTreeWidgetItem * sub_cred_item = new QTreeWidgetItem;
                     // ---------------------------------------
                     sub_cred_item->setText(0, tr("Subcredential"));
                     sub_cred_item->setText(1, qstrSubcredID);

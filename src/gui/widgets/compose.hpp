@@ -17,6 +17,7 @@ class MTCompose : public QWidget
     Q_OBJECT
     
     QString m_subject;            // Message subject line.
+    QString m_body;               // Message body. (For forwards, replies, etc.)
     QString m_msgtype;            // Will be "otserver" or "bitmessage" etc.
     QString m_NotaryID;           // If msgtype is "otserver" then the OT Server ID must be set here.
 
@@ -30,6 +31,14 @@ class MTCompose : public QWidget
 
     bool    m_bSent;
 
+    bool    m_bForwarding = false;
+    QString m_forwardSenderNymId;
+    QString m_forwardRecipientNymId;
+    QString m_forwardSenderAddress;
+    QString m_forwardRecipientAddress;
+    QString m_forwardSenderName;
+    QString m_forwardRecipientName;
+
 public:
     explicit MTCompose(QWidget *parent = 0);
     ~MTCompose();
@@ -40,7 +49,10 @@ public:
 
     bool sendingThroughOTServer(); // Checks m_msgtype to see if it is set to "otserver".
 
+    void setForwarded() { m_bForwarding = true; }
+    void setVariousIds(QString senderNymId, QString recipientNymId, QString senderAddress, QString recipientAddress); // NOTE: These IDs are ONLY used for the "forwarded portion" of the body. They have NOTHING to do with the actual IDs of THIS message being composed.
     void setInitialSubject(QString subject);
+    void setInitialBody(QString body);
     void setInitialMsgType(QString msgtype, QString server="");
     void setInitialServer(QString NotaryID);
     void setInitialSenderNym(QString nymId, QString address="");
@@ -82,9 +94,11 @@ public:
 
 signals:
     void balancesChanged();
-
     void ShowContact(QString);
     void ShowNym(QString);
+    void ShowTransport(QString);
+    void ShowServer(QString);
+    void nymWasJustChecked(QString);
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event);
@@ -101,6 +115,8 @@ private slots:
     void on_toolButtonFrom_clicked();
 
     void on_subjectEdit_textChanged(const QString &arg1);
+
+    void on_toolButton_3_clicked();
 
 private:
     bool already_init;

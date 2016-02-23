@@ -11,6 +11,7 @@
 
 #include <core/moneychanger.hpp>
 #include <core/handlers/contacthandler.hpp>
+#include <core/handlers/focuser.h>
 
 #include <opentxs/client/OTAPI.hpp>
 #include <opentxs/client/OTAPI_Exec.hpp>
@@ -133,9 +134,9 @@ bool MTSendDlg::sendCashierCheque(int64_t amount, QString toNymId, QString fromA
     std::string str_NotaryID (opentxs::OTAPI_Wrap::It()->GetAccountWallet_NotaryID(str_fromAcctId));
     // ------------------------------------------------------------
     int64_t SignedAmount = amount;
-    qDebug() << QString("Sending %1:\n Server:'%2'\n Nym:'%3'\n Acct:'%4'\n ToNym:'%5'\n Amount:'%6'\n Note:'%7'").
-                arg(nsChequeType).arg(str_NotaryID.c_str()).arg(str_fromNymId.c_str()).arg(str_fromAcctId.c_str()).
-                arg(toNymId).arg(SignedAmount).arg(note);
+//    qDebug() << QString("Sending %1:\n Server:'%2'\n Nym:'%3'\n Acct:'%4'\n ToNym:'%5'\n Amount:'%6'\n Note:'%7'").
+//                arg(nsChequeType).arg(str_NotaryID.c_str()).arg(str_fromNymId.c_str()).arg(str_fromAcctId.c_str()).
+//                arg(toNymId).arg(SignedAmount).arg(note);
     // ------------------------------------------------------------
     opentxs::OT_ME madeEasy;
 
@@ -350,12 +351,12 @@ bool MTSendDlg::sendChequeLowLevel(int64_t amount, QString toNymId, QString from
     int64_t SignedAmount = amount;
     int64_t trueAmount   = isInvoice ? (SignedAmount*(-1)) : SignedAmount;
     // ------------------------------------------------------------
-    qDebug() << QString("Sending %1:\n Server:'%2'\n Nym:'%3'\n Acct:'%4'\n ToNym:'%5'\n Amount:'%6'\n Note:'%7'").
-                arg(nsChequeType).arg(QString::fromStdString(str_NotaryID)).arg(QString::fromStdString(str_fromNymId)).
-                arg(fromAcctId).arg(toNymId).arg(SignedAmount).arg(note);
+//    qDebug() << QString("Sending %1:\n Server:'%2'\n Nym:'%3'\n Acct:'%4'\n ToNym:'%5'\n Amount:'%6'\n Note:'%7'").
+//                arg(nsChequeType).arg(QString::fromStdString(str_NotaryID)).arg(QString::fromStdString(str_fromNymId)).
+//                arg(fromAcctId).arg(toNymId).arg(SignedAmount).arg(note);
     // ------------------------------------------------------------
-    time_t tFrom = opentxs::OTAPI_Wrap::It()->GetTime();
-    time_t tTo   = tFrom + DEFAULT_CHEQUE_EXPIRATION;
+    time64_t tFrom = opentxs::OTAPI_Wrap::It()->GetTime();
+    time64_t tTo   = tFrom + DEFAULT_CHEQUE_EXPIRATION;
     // ------------------------------------------------------------
     opentxs::OT_ME madeEasy;
 
@@ -444,7 +445,7 @@ bool MTSendDlg::sendFunds(QString memo, QString qstr_amount)
     }
     // ----------------------------------------------------
     if (memo.isEmpty())
-        memo = tr("From the desktop client. (Empty memo.)");
+        memo = tr("(Memo was empty.)");
     // ----------------------------------------------------
     if (qstr_amount.isEmpty())
         qstr_amount = QString("0");
@@ -553,7 +554,7 @@ void MTSendDlg::on_sendButton_clicked()
     std::string str_fromAcctId(m_myAcctId.toStdString());
     QString     qstr_fromNymId(QString::fromStdString(opentxs::OTAPI_Wrap::It()->GetAccountWallet_NymID(str_fromAcctId)));
 
-    if (m_hisNymId == qstr_fromNymId)
+    if (0 == qstr_fromNymId.compare(m_hisNymId))
     {
         QMessageBox::warning(this, tr("Cannot Send To Yourself"),
                              tr("Sorry, but you cannot send to yourself. Please choose another recipient, or change the sending account."));
@@ -639,7 +640,7 @@ void MTSendDlg::on_fromButton_clicked()
     // -----------------------------------------------
     if (theChooser.exec() == QDialog::Accepted)
     {
-        qDebug() << QString("SELECT was clicked for AcctID: %1").arg(theChooser.m_qstrCurrentID);
+//      qDebug() << QString("SELECT was clicked for AcctID: %1").arg(theChooser.m_qstrCurrentID);
 
         if (!theChooser.m_qstrCurrentID.isEmpty())
         {
@@ -662,7 +663,7 @@ void MTSendDlg::on_fromButton_clicked()
     }
     else
     {
-      qDebug() << "CANCEL was clicked";
+//      qDebug() << "CANCEL was clicked";
     }
     // -----------------------------------------------
     m_myAcctId = QString("");
@@ -719,7 +720,7 @@ void MTSendDlg::on_toButton_clicked()
     // -----------------------------------------------
     if (theChooser.exec() == QDialog::Accepted)
     {
-        qDebug() << QString("SELECT was clicked for ID: %1").arg(theChooser.m_qstrCurrentID);
+//        qDebug() << QString("SELECT was clicked for ID: %1").arg(theChooser.m_qstrCurrentID);
 
         // If not the same as before, then we have to choose a NymID based on the selected Contact.
         //
@@ -806,7 +807,7 @@ void MTSendDlg::on_toButton_clicked()
     }
     else
     {
-      qDebug() << "CANCEL was clicked";
+//      qDebug() << "CANCEL was clicked";
     }
     // -----------------------------------------------
 }
@@ -820,6 +821,13 @@ void MTSendDlg::dialog()
 
     if (!already_init)
     {
+        if (!Moneychanger::It()->expertMode())
+        {
+            ui->comboBox->setVisible(false);
+            ui->toolButton->setVisible(false);
+            ui->toolButtonManageAccts->setVisible(false);
+        }
+        // ---------------------------------------
         connect(this,               SIGNAL(balancesChanged()),
                 Moneychanger::It(), SLOT  (onBalancesChanged()));
         // ---------------------------------------
@@ -906,6 +914,8 @@ void MTSendDlg::dialog()
         }
         // -------------------------------------------
 
+        ui->comboBox->setCurrentIndex(1); // Cheque.
+
         ui->toButton->setFocus();
 
 
@@ -913,7 +923,10 @@ void MTSendDlg::dialog()
         already_init = true;
     }
 
-    show();
+    //show();
+    Focuser f(this);
+    f.show();
+    f.focus();
 }
 
 

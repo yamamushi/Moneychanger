@@ -17,11 +17,15 @@
 #include <opentxs/client/OTAPI_Exec.hpp>
 #include <opentxs/client/OT_ME.hpp>
 
+#include <opentxs/core/String.hpp>
+#include <opentxs/core/Identifier.hpp>
+
 #include <QMessageBox>
 #include <QDebug>
 #include <QStringList>
 
 
+void MTCompose::setInitialBody(QString body)  { m_body = body; }
 void MTCompose::setInitialSubject(QString subject)  { m_subject = subject; }
 
 
@@ -911,7 +915,7 @@ void MTCompose::on_viaButton_clicked()
     }
     else
     {
-      qDebug() << "CANCEL was clicked";
+//      qDebug() << "CANCEL was clicked";
     }
 }
 
@@ -1059,7 +1063,7 @@ void MTCompose::on_sendButton_clicked()
         QMessageBox::StandardButton info_btn =
                 QMessageBox::information(this, tr("Success"), tr("Success sending message."));
         // -----------------------------------------------------------------
-        emit balancesChanged(); // So we'll see the sent message in the transaction history
+        emit balancesChanged(); // So we'll see the sent message in the payment history.
         // -----------------------------------------------------------------
     }
     // -----------------------------------------------------------------
@@ -2386,7 +2390,7 @@ bool MTCompose::verifySenderAgainstServer(bool bAsk/*=true*/, QString qstrNotary
                     response = madeEasy.register_nym(notary_id, sender_id);
                 }
 
-                qDebug() << QString("Nym Creation Response: %1").arg(QString::fromStdString(response));
+                qDebug() << QString("Nym Registration Response: %1").arg(QString::fromStdString(response));
 
                 int32_t nReturnVal = madeEasy.VerifyMessageSuccess(response);
 
@@ -2395,6 +2399,9 @@ bool MTCompose::verifySenderAgainstServer(bool bAsk/*=true*/, QString qstrNotary
                     Moneychanger::It()->HasUsageCredits(notary_id, sender_id);
                     return false;
                 }
+                else
+                    MTContactHandler::getInstance()->NotifyOfNymServerPair(QString::fromStdString(sender_id),
+                                                                           QString::fromStdString(notary_id));
             }
             else
                 return false;
@@ -2457,6 +2464,8 @@ bool MTCompose::verifyRecipientAgainstServer(bool bAsk/*=true*/, QString qstrNot
                         Moneychanger::It()->HasUsageCredits(notary_id, sender_id);
                         return false;
                     }
+                    else
+                        emit nymWasJustChecked(m_recipientNymId);
                 }
                 else
                     return false;
@@ -2555,7 +2564,7 @@ void MTCompose::on_fromButton_clicked()
     }
     else
     {
-      qDebug() << "CANCEL was clicked";
+//      qDebug() << "CANCEL was clicked";
     }
 }
 
@@ -2639,7 +2648,7 @@ void MTCompose::on_toButton_clicked()
     // -----------------------------------------------
     if (theChooser.exec() == QDialog::Accepted)
     {
-        qDebug() << QString("SELECT was clicked for ID: %1").arg(theChooser.m_qstrCurrentID);
+//        qDebug() << QString("SELECT was clicked for ID: %1").arg(theChooser.m_qstrCurrentID);
 
         // We try to choose a NymID based on the selected Contact.
         //
@@ -2692,7 +2701,7 @@ void MTCompose::on_toButton_clicked()
     }
     else
     {
-      qDebug() << "CANCEL was clicked";
+//      qDebug() << "CANCEL was clicked";
     }
     // -----------------------------------------------
 }
@@ -2706,8 +2715,13 @@ void MTCompose::dialog()
 
     if (!already_init)
     {
-        connect(this,               SIGNAL(balancesChanged()),
-                Moneychanger::It(), SLOT  (onBalancesChanged()));
+        if (!Moneychanger::It()->expertMode())
+        {
+            ui->toolButtonTo->setVisible(false);
+            ui->toolButtonFrom->setVisible(false);
+        }
+        connect(this, SIGNAL(balancesChanged()), Moneychanger::It(), SLOT  (onBalancesChanged()));
+        connect(this, SIGNAL(nymWasJustChecked(QString)), Moneychanger::It(), SLOT  (onCheckNym(QString)));
         // ---------------------------------------
         this->setWindowTitle(tr("Compose: (no subject)"));
 
@@ -2746,12 +2760,9 @@ void MTCompose::dialog()
         setRecipientNameBasedOnAvailableData();
         setTransportDisplayBasedOnAvailableData();
         // -------------------------------------------
-
-
-        // -------------------------------------------
         if (!m_subject.isEmpty())
         {
-            QString qstrRe = tr("re:");
+            QString qstrRe = m_bForwarding ? tr("fw:") : tr("re:");
 
             QString qstrSubjectLeft = m_subject.left(qstrRe.size());
 
@@ -2761,22 +2772,68 @@ void MTCompose::dialog()
                 m_subject = strTemp;
             }
             // -----------------------
-            QString qstrTempSubject = m_subject;
-
-            ui->subjectEdit->setText(qstrTempSubject);
+            ui->subjectEdit->setText(m_subject);
             // -----------------------
-            this->setWindowTitle(QString("%1: %2").arg(tr("Compose")).arg(qstrTempSubject));
+            this->setWindowTitle(QString("%1: %2").arg(tr("Compose")).arg(m_subject));
         }
         // -------------------------------------------
+        if (!m_body.isEmpty())
+        {
+            QString qstrRe = m_bForwarding ? tr("\n\n-----Forwarded:\n") : tr("\n\n-----You wrote:\n");
+            QString qstrReplyBody(m_body);
 
+            qstrRe += QString("%1: %2\n").arg(tr("From")).arg(m_forwardSenderName);
+            qstrRe += QString("%1: %2\n\n").arg(tr("To")).arg(m_forwardRecipientName);
 
+            qstrReplyBody = qstrRe + m_body;
+
+            ui->contentsEdit->setPlainText(qstrReplyBody);
+        }
+        // -------------------------------------------
         ui->contentsEdit->setFocus();
-
 
         /** Flag Already Init **/
         already_init = true;
     }
 
+}
+
+void MTCompose::setVariousIds(QString senderNymId, QString recipientNymId, QString senderAddress, QString recipientAddress)
+{
+    m_forwardSenderNymId      = senderNymId;
+    m_forwardRecipientNymId   = recipientNymId;
+    m_forwardSenderAddress    = senderAddress;
+    m_forwardRecipientAddress = recipientAddress;
+    // ----------------------------------------------
+    if (!m_forwardSenderNymId.isEmpty())
+    {
+        MTNameLookupQT theLookup;
+        m_forwardSenderName = QString::fromStdString(theLookup.GetNymName(m_forwardSenderNymId.toStdString(), ""));
+    }
+    if (m_forwardSenderName.isEmpty() && !m_forwardSenderAddress.isEmpty())
+    {
+        MTNameLookupQT theLookup;
+        m_forwardSenderName = QString::fromStdString(theLookup.GetAddressName(m_forwardSenderAddress.toStdString()));
+    }
+    if (m_forwardSenderName.isEmpty() && !m_forwardSenderNymId.isEmpty())
+        m_forwardSenderName = m_forwardSenderNymId;
+    else if (m_forwardSenderName.isEmpty() && !m_forwardSenderAddress.isEmpty())
+        m_forwardSenderName = m_forwardSenderAddress;
+    // ----------------------------------------------
+    if (!m_forwardRecipientNymId.isEmpty())
+    {
+        MTNameLookupQT theLookup;
+        m_forwardRecipientName = QString::fromStdString(theLookup.GetNymName(m_forwardRecipientNymId.toStdString(), ""));
+    }
+    if (m_forwardRecipientName.isEmpty() && !m_forwardRecipientAddress.isEmpty())
+    {
+        MTNameLookupQT theLookup;
+        m_forwardRecipientName = QString::fromStdString(theLookup.GetAddressName(m_forwardRecipientAddress.toStdString()));
+    }
+    if (m_forwardRecipientName.isEmpty() && !m_forwardRecipientNymId.isEmpty())
+        m_forwardRecipientName = m_forwardRecipientNymId;
+    else if (m_forwardRecipientName.isEmpty() && !m_forwardRecipientAddress.isEmpty())
+        m_forwardRecipientName = m_forwardRecipientAddress;
 }
 
 
@@ -2838,8 +2895,10 @@ MTCompose::MTCompose(QWidget *parent) :
 
     connect(this, SIGNAL(balancesChanged()), this, SLOT(onBalancesChanged()));
 
-    connect(this, SIGNAL(ShowContact(QString)), Moneychanger::It(), SLOT(mc_showcontact_slot(QString)));
-    connect(this, SIGNAL(ShowNym(QString)),     Moneychanger::It(), SLOT(mc_show_nym_slot(QString)));
+    connect(this, SIGNAL(ShowContact(QString)),   Moneychanger::It(), SLOT(mc_showcontact_slot(QString)));
+    connect(this, SIGNAL(ShowNym(QString)),       Moneychanger::It(), SLOT(mc_show_nym_slot(QString)));
+    connect(this, SIGNAL(ShowTransport(QString)), Moneychanger::It(), SLOT(mc_showtransport_slot(QString)));
+    connect(this, SIGNAL(ShowServer(QString)),    Moneychanger::It(), SLOT(mc_show_server_slot(QString)));
 
     ui->toolButton  ->setStyleSheet("QToolButton { border: 0px solid #575757; }");
     ui->toolButton_2->setStyleSheet("QToolButton { border: 0px solid #575757; }");
@@ -2892,4 +2951,15 @@ void MTCompose::on_toolButtonFrom_clicked()
         qstrNymID = m_senderNymId;
     // ------------------------------------------------
     emit ShowNym(qstrNymID);
+}
+
+void MTCompose::on_toolButton_3_clicked()
+{
+    if ((QString("otserver") == m_msgtype) && !m_NotaryID.isEmpty())
+        emit ShowServer(m_NotaryID);
+    else if (QString("otserver") != m_msgtype)
+    {
+        QString methodID = QString("%1").arg(m_senderMethodId);
+        emit ShowTransport(methodID);
+    }
 }

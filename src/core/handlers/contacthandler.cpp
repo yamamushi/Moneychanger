@@ -7,17 +7,42 @@
 #include <core/handlers/contacthandler.hpp>
 #include <core/handlers/DBHandler.hpp>
 #include <core/mtcomms.h>
+#include <core/moneychanger.hpp>
 
 #include <opentxs/core/OTStorage.hpp>
 #include <opentxs/client/OTAPI.hpp>
 #include <opentxs/client/OTAPI_Exec.hpp>
 #include <opentxs/client/OpenTransactions.hpp>
-#include <opentxs/core/crypto/OTASCIIArmor.hpp>
 #include <opentxs/client/OTWallet.hpp>
+#include <opentxs/core/NumList.hpp>
+#include <opentxs/core/Proto.hpp>
+#include <opentxs/core/crypto/OTASCIIArmor.hpp>
+#include <opentxs/core/crypto/OTPassword.hpp>
+#include <opentxs/core/crypto/OTPasswordData.hpp>
 
 #include <QDebug>
 #include <QObject>
 #include <QStringList>
+#include <QSqlField>
+#include <QFlags>
+
+#include <tuple>
+
+void MTNameLookupQT::notifyOfSuccessfulNotarization(const std::string & str_acct_id,
+                                                    const std::string   p_nym_id,
+                                                    const std::string   p_notary_id,
+                                                    const std::string   p_txn_contents,
+                                                    int64_t lTransactionNum,
+                                                    int64_t lTransNumForDisplay) const
+{
+    // Add/update record to payments table for whatever
+    // transaction just occurred.
+
+    Moneychanger::It()->AddPaymentBasedOnNotification(str_acct_id,
+                                                      p_nym_id, p_notary_id,
+                                                      p_txn_contents, lTransactionNum, lTransNumForDisplay);
+}
+
 
 
 std::string MTNameLookupQT::GetNymName(const std::string & str_id,
@@ -41,10 +66,39 @@ std::string MTNameLookupQT::GetNymName(const std::string & str_id,
 
             if (!contact_name.isEmpty())
                 str_result = contact_name.toStdString();
+            else
+            {
+                QString qstrName = MTContactHandler::getInstance()->getDisplayNameFromClaims(QString::fromStdString(str_id));
+
+                if (qstrName.isEmpty())
+                    qstrName = MTContactHandler::getInstance()->GetValueByID(QString::fromStdString(str_id), "nym_display_name", "nym", "nym_id");
+
+                if (!qstrName.isEmpty())
+                {
+                    MTContactHandler::getInstance()->SetContactName(nContactID, qstrName);
+                    str_result = qstrName.toStdString();
+                }
+            }
             // -----------------------------------------------
             if (p_notary_id != "")
                 MTContactHandler::getInstance()->NotifyOfNymServerPair(QString::fromStdString(str_id),
                                                                        QString::fromStdString(p_notary_id));
+        }
+        else // No contact found.
+        {
+            QString qstrName = MTContactHandler::getInstance()->getDisplayNameFromClaims(QString::fromStdString(str_id));
+
+            if (qstrName.isEmpty())
+                qstrName = MTContactHandler::getInstance()->GetValueByID(QString::fromStdString(str_id), "nym_display_name", "nym", "nym_id");
+
+            if (!qstrName.isEmpty())
+            {
+                str_result = qstrName.toStdString();
+                // -----------------------------------------------
+                if (p_notary_id != "")
+                    MTContactHandler::getInstance()->NotifyOfNymServerPair(QString::fromStdString(str_id),
+                                                                           QString::fromStdString(p_notary_id));
+            }
         }
     }
     // ------------------------
@@ -94,13 +148,26 @@ std::string MTNameLookupQT::GetAddressName(const std::string & str_address) cons
 
             if (!contact_name.isEmpty())
                 str_result = contact_name.toStdString();
+            else
+            {
+                QString qstrNymId = MTContactHandler::getInstance()->GetNymByAddress(QString::fromStdString(str_address));
+
+                if (qstrNymId.isEmpty())
+                    qstrNymId = MTContactHandler::getInstance()->getNymIdFromClaimsByBtMsg(QString::fromStdString(str_address));
+
+                if (!qstrNymId.isEmpty())
+                    str_result = this->GetNymName(qstrNymId.toStdString(), "");
+            }
         }
         else
         {
-            QString qstrNymID = MTContactHandler::getInstance()->GetNymByAddress(QString::fromStdString(str_address));
+            QString qstrNymId = MTContactHandler::getInstance()->GetNymByAddress(QString::fromStdString(str_address));
 
-            if (!qstrNymID.isEmpty())
-                str_result = this->GetNymName(qstrNymID.toStdString(), "");
+            if (qstrNymId.isEmpty())
+                qstrNymId = MTContactHandler::getInstance()->getNymIdFromClaimsByBtMsg(QString::fromStdString(str_address));
+
+            if (!qstrNymId.isEmpty())
+                str_result = this->GetNymName(qstrNymId.toStdString(), "");
         }
     }
     // ------------------------
@@ -132,6 +199,794 @@ MTContactHandler * MTContactHandler::getInstance()
 }
 
 
+bool MTContactHandler::claimRecordExists(const QString & claim_id)
+{
+    QMutexLocker locker(&m_Mutex);
+    QString str_select_count = QString("SELECT claim_section FROM `claim` WHERE `claim_id`='%1' LIMIT 0,1").arg(claim_id);
+    int nRows = DBHandler::getInstance()->querySize(str_select_count);
+    return (nRows > 0);
+}
+
+
+// --------------------------------------------
+//QString create_claim_verification_table = "CREATE TABLE IF NOT EXISTS claim_verification"
+//       "(ver_id TEXT PRIMARY KEY,"
+//       " ver_claimant_nym_id TEXT,"
+//       " ver_verifier_nym_id TEXT,"
+//       " ver_claim_id TEXT,"
+//       " ver_polarity INTEGER,"
+//       " ver_start INTEGER,"
+//       " ver_end INTEGER,"
+//       " ver_signature TEXT,"
+//       " ver_signature_verified INTEGER"
+//       ")";
+
+
+// Doesn't lock the mutex.
+// Also, the calling function knows already whether the record exists, and what it contains.
+//bool MTContactHandler::lowLevelUpdateVerificationPolarity(const QString & qstrClaimId,        const QString & qstrClaimantNymId,
+//                                                          const QString & qstrVerificationId, const QString & qstrVerifierNymID,
+//                                                          const QString & qstrSignature,
+//                                                          const bool bPolarity,
+//                                                          const bool bInsertingNew,
+//                                                          const bool bSignatureIsVerified)
+//{
+//    // NOTE: This is all wrong. This is a nice function and all, but the values have to be set
+//    // in the Nym itself, and then re-imported into the database.
+
+//    // FYI Upsert is only possible if you replace ALL fields.
+//    //
+//    QString queryStr;
+//    if (bInsertingNew)
+//        queryStr = QString("INSERT INTO `claim_verification`"
+//                           " (`ver_id`, `ver_claimant_nym_id`, `ver_verifier_nym_id`, `ver_claim_id`, `ver_polarity`, "
+//                           "  `ver_start`, `ver_end`, `ver_signature`, `ver_signature_verified`)"
+//                           " VALUES(:ver_idBlah, :ver_claimant_nym_idBlah, :ver_verifier_nym_idBlah, :ver_claim_idBlah, :ver_polarityBlah,"
+//                           " :ver_startBlah , :ver_endBlah, :ver_signatureBlah, :ver_signature_verifiedBlah)");
+//    else
+//        queryStr = QString("UPDATE `claim_verification` SET"
+//                           " `ver_claimant_nym_id`=:ver_claimant_nym_idBlah,`ver_verifier_nym_id`=:ver_verifier_nym_idBlah,"
+//                           " `ver_claim_id`=:ver_claim_idBlah,`ver_polarity`=:ver_polarityBlah,`ver_start`=:ver_startBlah,"
+//                           " `ver_end`=:ver_endBlah,`ver_signature`=:ver_signatureBlah,"
+//                           " `ver_signature_verified`=:ver_signature_verifiedBlah WHERE `ver_id`=:ver_idBlah");
+//    bool bRan = false;
+
+//    try
+//    {
+//    #ifdef CXX_11
+//        std::unique_ptr<DBHandler::PreparedQuery> qu;
+//    #else /* CXX_11?  */
+//        std::auto_ptr<DBHandler::PreparedQuery> qu;
+//    #endif /* CXX_11?  */
+//        qu.reset (DBHandler::getInstance ()->prepareQuery (queryStr));
+//        // ---------------------------------------------
+//        qu->bind (":ver_idBlah", qstrVerificationId);
+//        qu->bind (":ver_claimant_nym_idBlah", qstrClaimantNymId);
+//        qu->bind (":ver_verifier_nym_idBlah", qstrVerifierNymID);
+//        qu->bind (":ver_claim_idBlah", qstrClaimId);
+//        qu->bind (":ver_polarityBlah", (bPolarity ? 1 : 0));
+//        qu->bind (":ver_startBlah", 0);
+//        qu->bind (":ver_endBlah", 0);
+//        qu->bind (":ver_signatureBlah", qstrSignature);
+//        qu->bind (":ver_signature_verifiedBlah", (bSignatureIsVerified ? 1 : 0));
+
+//        bRan = DBHandler::getInstance ()->runQuery (qu.release ());
+//    }
+//    catch (const std::exception& exc)
+//    {
+//        qDebug () << "Error: " << exc.what ();
+//        return false;
+//    }
+//    // -----------------------------
+//    if (!bInsertingNew)
+//    {
+//        if (bRan)
+//            return true;
+//        else
+//            return false;
+//    }
+//    // -----------------------------
+//    const int nRowId = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `claim_verification`", 0, 0);
+//    return (nRowId > 0);
+//}
+
+
+static void blah()
+{
+//resume
+//todo
+
+// OpenTransactions.hpp
+//EXPORT VerificationSet GetVerificationSet(const Nym& fromNym) const;
+// EXPORT bool SetVerifications(Nym& onNym,
+//                            const proto::VerificationSet&) const;
+
+// Nym.hpp
+//    std::shared_ptr<proto::VerificationSet> VerificationSet() const;
+//    bool SetVerificationSet(const proto::VerificationSet& data);
+
+//    proto::Verification Sign(
+//        const std::string& claim,
+//        const bool polarity,
+//        const int64_t start = 0,
+//        const int64_t end = 0,
+//        const OTPasswordData* pPWData = nullptr) const;
+//    bool Verify(const proto::Verification& item) const;
+
+    // VerificationSet has 2 groups, internal and external.
+    // Internal is for your signatures on other people's claims.
+    // External is for other people's signatures on your claims.
+    // When you find that in the external, you copy it to your own credential.
+    // ==> So external is for re-publishing other people's verifications of your claims.
+
+    // If we've repudiated any claims, you can add their IDs to the repudiated field in the verification set.
+}
+//bool MTContactHandler::updateVerificationPolarity(const QString & qstrClaimId,        const QString & qstrClaimantNymId,
+//                                                  const QString & qstrVerificationId, const QString & qstrVerifierNymId,
+//                                                  const QString & qstrSignature,
+//                                                  const bool bPolarity,
+//                                                  const bool bInsertingNew,
+//                                                  const bool bSignatureIsVerified)
+//{
+
+////    typedef std::set<Claim> ClaimSet;
+
+////    // verification identifier, claim identifier, polarity, start time, end time, signature
+////    typedef std::tuple<std::string, std::string, bool, int64_t, int64_t, std::string>   Verification;
+
+////    // nymID, verifications
+////    typedef std::map<std::string, std::set<Verification>>   VerificationMap;
+////
+////    // internal verifications, external verifications, repudiated IDs
+////    typedef std::tuple<
+////        VerificationMap,
+////        VerificationMap,
+////        std::set<std::string>>   VerificationSet;
+
+
+
+
+
+
+//    if (qstrVerifierNymId.isEmpty())
+//        return false;
+
+//    opentxs::String strVerifierNymId = qstrVerifierNymId.toStdString();
+//    opentxs::Identifier verifierNymId(strVerifierNymId);
+
+//    opentxs::Nym * pVerifierNym = opentxs::OTAPI_Wrap::OTAPI()->GetOrLoadPrivateNym(verifierNymId, false, __FUNCTION__);
+
+//    if (nullptr == pVerifierNym)
+//    {
+//        qDebug() << __FUNCTION__ << ": Private Nym not found for verifier: " << qstrVerifierNymId;
+//        return false;
+//    }
+//    // ------------------------------
+
+
+//    VerificationSet SetVerification(
+//                Nym& onNym,
+//                bool success,
+//                const std::string& claimID,
+//                const bool polarity,
+//                const int64_t start = 0,
+//                const int64_t end = 0) const;
+
+
+
+
+
+
+
+//    opentxs::OT_API::VerificationSet   verification_set = opentxs::OTAPI_Wrap::OTAPI()->GetVerificationSet(*pVerifierNym);
+//    opentxs::OT_API::VerificationMap & internal         = std::get<0>(verification_set);
+//    opentxs::OT_API::VerificationMap & external         = std::get<1>(verification_set);
+//    std::set<std::string>            & repudiatedIDs    = std::get<2>(verification_set);
+//    // ------------------------------
+
+//    if (bInsertingNew)
+//    {
+//        opentxs::OT_API::Verification verification;
+
+//        internal.insert(std::pair<std::string, std::set<opentxs::OT_API::Verification>>());
+//    }
+//    else // Editing existing.
+//    {
+
+
+//    }
+
+//    //    // verification identifier, claim identifier, polarity, start time, end time, signature
+//    //    typedef std::tuple<std::string, std::string, bool, int64_t, int64_t, std::string>   Verification;
+
+//    //    proto::Verification Sign(
+//    //        const std::string& claim,
+//    //        const bool polarity,
+//    //        const int64_t start = 0,
+//    //        const int64_t end = 0,
+//    //        const OTPasswordData* pPWData = nullptr) const;
+
+////    QString create_claim_verification_table = "CREATE TABLE IF NOT EXISTS claim_verification"
+////           "(ver_id TEXT PRIMARY KEY,"
+////           " ver_claimant_nym_id TEXT,"
+////           " ver_verifier_nym_id TEXT,"
+////           " ver_claim_id TEXT,"
+////           " ver_polarity INTEGER,"
+////           " ver_start INTEGER,"
+////           " ver_end INTEGER,"
+////           " ver_signature TEXT,"
+////           " ver_signature_verified INTEGER"
+////           ")";
+
+//}
+
+//// --------------------------------------------
+//// The bool return value here means, if true, "FYI, I changed something based on this call."
+//// Otherwise if false, it means, "FYI, I didn't need to change anything based on this call."
+////
+//bool MTContactHandler::notifyClaimConfirm(const QString & qstrClaimId, const QString & qstrVerifierNymID)
+//{
+//    // See if the verifier has verified ClaimId.
+
+//    // If so, get current status and if need be, change Polarity to True.
+
+
+//    QMutexLocker locker(&m_Mutex);
+
+//    bool bReturnValue = false;
+
+//    QString str_select = QString("SELECT `ver_id`,`ver_polarity` FROM `claim_verification` WHERE `ver_claim_id`='%1' AND `ver_verifier_nym_id`='%2' LIMIT 0,1").
+//            arg(qstrClaimId).arg(qstrVerifierNymID);
+
+//    int nRows = 0;
+//    try
+//    {
+//       nRows = DBHandler::getInstance()->querySize(str_select);
+//    }
+//    catch (const std::exception& exc)
+//    {
+//        qDebug () << "Error: " << exc.what ();
+//        return bReturnValue;
+//    }
+//    // ---------------------------------------
+//    if (nRows > 0)
+//    {
+//        const bool bCurrentPolarity = (0 == DBHandler::getInstance()->queryInt(str_select, 1, 0)) ? false : true;
+
+//        if (bCurrentPolarity) // It was already confirmed, so we don't need to do anything.
+//            return false; // False means, no action was necessary (since it was already confirmed.)
+//        // ---------------------------
+//        // Else, the polarity was set to "REFUTE" on an existing verification.
+//        // So we need to get the verifications on the Nym, change this one,
+//        // and then set the verifications again.
+//        // Then we return true (had to make a change) so the calling function can re-import
+//        // the Nym back into the local database and refresh the UI based on that.
+
+//        bReturnValue = true;
+//    }
+//    else // No rows found.
+//    {
+//        // No existing confirmation or refutation was found. Therefore we create a new one,
+//        // in a similar process to that seen above.
+//        // Basically we need to get the verifications on the Nym, add this one,
+//        // and then set the verifications again.
+
+
+
+//        // Return true since we had to add a verification (we had to "change" something.)
+//        bReturnValue = true;
+//    }
+//    // ---------------------------------------
+//    return bReturnValue;
+//}
+
+
+bool MTContactHandler::claimVerificationLowlevel(const QString & qstrClaimId, const QString & qstrClaimantNymId,
+                                                 const QString & qstrVerifierNymId, opentxs::OT_API::ClaimPolarity claimPolarity)
+{
+    if (qstrVerifierNymId.isEmpty() || qstrClaimId.isEmpty())
+        return false;
+
+
+    qDebug() << "DEBUGGING: claimVerificationLowlevel: USER selected claimPolarity (and setting in OT): " << claimPolarityToInt(claimPolarity);
+
+
+//resume
+
+    opentxs::String strVerifierNymId = qstrVerifierNymId.toStdString();
+    opentxs::Identifier verifierNymId(strVerifierNymId);
+    opentxs::Nym * pVerifierNym = opentxs::OTAPI_Wrap::OTAPI()->GetOrLoadPrivateNym(verifierNymId, false, __FUNCTION__);
+    if (nullptr == pVerifierNym) {
+        qDebug() << __FUNCTION__ << ": Private Nym not found for verifier: " << qstrVerifierNymId;
+        return false;
+    }
+    // ------------------------------
+    bool bChanged = false; // So we know if OT had to change anything when it set the verification. (Maybe it was already there.)
+
+    opentxs::OTPasswordData thePWData(QString(QObject::tr("We've almost bubbled up to the top!! Confirming/refuting a claim.")).toStdString().c_str());
+
+    opentxs::OT_API::VerificationSet the_set = opentxs::OTAPI_Wrap::OTAPI()->SetVerification(
+                *pVerifierNym,
+                bChanged,
+                qstrClaimantNymId.toStdString(),
+                qstrClaimId.toStdString(),
+                claimPolarity,
+                0, // start. todo.
+                0, // end. todo. bitemperal.
+                &thePWData);
+//    Q_UNUSED(verification_set);
+
+
+    qDebug() << QString("%1").arg(QString(bChanged ? "YES, I CHANGED A VALUE (ACCORDING TO OT)" : "**NO** didn't CHANGE A VALUE, ACCORDING TO OT." ));
+
+
+
+
+
+
+
+
+    opentxs::OT_API::VerificationMap       & internalSet   = std::get<0>(the_set);
+    opentxs::OT_API::VerificationMap       & externalSet   = std::get<1>(the_set);
+    std::set<std::string>                  & repudiatedIds = std::get<2>(the_set);
+
+    // Internal verifications:
+    // Here I'm looping through pCurrentNym's verifications of other people's claims.
+    for (auto& claimant: internalSet)
+    {
+        // Here we're looping through those other people. (Claimants.)
+
+        const std::string                         str_claimant_id  = claimant.first;
+        std::set<opentxs::OT_API::Verification> & verification_set = claimant.second;
+
+        for (auto& verification : verification_set)
+        {
+            const bool ver_polarity = std::get<2>(verification);
+
+            qDebug() << QString("%1").arg(QString(ver_polarity ? "==>Polarity is now positive" : "==>Polarity is now negative" ));
+
+        }
+    }
+
+    return bChanged;
+}
+
+bool MTContactHandler::claimVerificationConfirm(const QString & qstrClaimId, const QString & qstrClaimantNymId, const QString & qstrVerifierNymId)
+{
+    return claimVerificationLowlevel(qstrClaimId, qstrClaimantNymId, qstrVerifierNymId, opentxs::OT_API::ClaimPolarity::POSITIVE);
+}
+
+bool MTContactHandler::claimVerificationRefute(const QString & qstrClaimId, const QString & qstrClaimantNymId, const QString & qstrVerifierNymId)
+{
+    return claimVerificationLowlevel(qstrClaimId, qstrClaimantNymId, qstrVerifierNymId, opentxs::OT_API::ClaimPolarity::NEGATIVE);
+}
+
+bool MTContactHandler::claimVerificationNoComment(const QString & qstrClaimId, const QString & qstrClaimantNymId, const QString & qstrVerifierNymId)
+{
+    return claimVerificationLowlevel(qstrClaimId, qstrClaimantNymId, qstrVerifierNymId, opentxs::OT_API::ClaimPolarity::NEUTRAL);
+}
+
+bool MTContactHandler::getPolarityIfAny(const QString & claim_id, const QString & verifier_nym_id, bool & bPolarity)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    bool bReturnValue = false;
+
+    QString str_select = QString("SELECT `ver_id`,`ver_polarity` FROM `claim_verification` WHERE `ver_claim_id`='%1' AND `ver_verifier_nym_id`='%2' LIMIT 0,1").
+            arg(claim_id).arg(verifier_nym_id);
+
+    int nRows = 0;
+    try
+    {
+       nRows = DBHandler::getInstance()->querySize(str_select);
+       // ---------------------------------------
+       if (nRows > 0)
+       {
+           const int polarity = DBHandler::getInstance()->queryInt(str_select, 1, 0);
+           opentxs::OT_API::ClaimPolarity claimPolarity = intToClaimPolarity(polarity);
+
+           if (opentxs::OT_API::ClaimPolarity::NEUTRAL == claimPolarity)
+               qDebug() << __FUNCTION__ << ": ERROR! A claim verification can't have neutral polarity, since that "
+                           "means no verification exists. How did it get into the database this way?";
+           else
+           {
+               bReturnValue = true;
+               bPolarity = (opentxs::OT_API::ClaimPolarity::NEGATIVE == claimPolarity) ? false : true;
+           }
+
+
+           qDebug() << "DEBUGGING: getPolarityIfAny (from database): bPolarity: " << QString(bPolarity ? "True" : "False");
+
+       }
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return bReturnValue;
+    }
+    // ---------------------------------------
+    return bReturnValue;
+}
+
+
+QString MTContactHandler::getDisplayNameFromClaims(const QString & claimant_nym_id)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString qstrReturnVal;
+    QString str_select = QString("SELECT `claim_value`, `claim_att_active`, `claim_att_primary` FROM `claim` WHERE `claim_nym_id`='%1' AND `claim_section`=%2").
+            arg(claimant_nym_id).arg(opentxs::proto::CONTACTSECTION_NAME);
+
+    int nRows = 0;
+    try
+    {
+       nRows = DBHandler::getInstance()->querySize(str_select);
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return qstrReturnVal;
+    }
+    // ---------------------------------------
+    if (nRows > 0)
+    {
+        QString qstrName, qstrFirstName, qstrInactiveName;
+        bool bActive  = false;
+        bool bPrimary = false;
+
+        for (int nCurrentRow = 0; nCurrentRow < nRows; ++nCurrentRow)
+        {
+            const QString temp = DBHandler::getInstance()->queryString(str_select, 0, nCurrentRow);
+            const int nActive  = DBHandler::getInstance()->queryInt(str_select, 1, nCurrentRow);
+            const int nPrimary = DBHandler::getInstance()->queryInt(str_select, 2, nCurrentRow);
+
+            bActive  = !(0 == nActive);
+            bPrimary = !(0 == nPrimary);
+            // --------------------------
+            if (temp.isEmpty())
+                continue;
+            qstrName = temp;
+            // --------------------------
+            if (!bActive)
+                qstrInactiveName = qstrName;
+            else if (0 == nCurrentRow)
+                qstrFirstName = qstrName;
+            // --------------------------
+            if (bPrimary)
+                break;
+        }
+
+        qstrReturnVal = bPrimary ? qstrName :
+                                   (!qstrFirstName.isEmpty() ? qstrFirstName : qstrInactiveName);
+    }
+    // ---------------------------------------
+    return qstrReturnVal;
+}
+
+QString MTContactHandler::getNymIdFromClaimsByBtMsg(const QString & bitmessage_address)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString qstrReturnVal;
+    QString str_select = QString("SELECT `claim_nym_id` FROM `claim` WHERE `claim_value`='%1' AND `claim_section`=%2").
+            arg(bitmessage_address).arg(opentxs::proto::CONTACTSECTION_BITMESSAGE);
+
+    int nRows = 0;
+    try
+    {
+       nRows = DBHandler::getInstance()->querySize(str_select);
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return qstrReturnVal;
+    }
+    // ---------------------------------------
+    if (nRows > 0)
+    {
+        QString qstrNymId;
+
+        int nFound = 0;
+        for (int nCurrentRow = 0; nCurrentRow < nRows; ++nCurrentRow)
+        {
+            const QString temp = DBHandler::getInstance()->queryString(str_select, 0, nCurrentRow);
+            // --------------------------
+            if (temp.isEmpty())
+                continue;
+            nFound++;
+            // --------------------------
+            if (1 == nFound)
+                qstrNymId = temp;
+            else
+                qDebug() << "WARNING JUSTUS: Right now we're just grabbing the first NymId that matches a Bitmessage address, BUT there were multiple matches! CLAIM RETURNED MAY BE FALSE. Need rules "
+                            "here so we only return a verified claim!";
+        }
+
+        qstrReturnVal = qstrNymId;
+    }
+    // ---------------------------------------
+    return qstrReturnVal;
+}
+
+QString MTContactHandler::getBitmessageAddressFromClaims(const QString & claimant_nym_id)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString qstrReturnVal;
+    QString str_select = QString("SELECT `claim_value`, `claim_att_active`, `claim_att_primary` FROM `claim` WHERE `claim_nym_id`='%1' AND `claim_section`=%2").
+            arg(claimant_nym_id).arg(opentxs::proto::CONTACTSECTION_BITMESSAGE);
+
+    int nRows = 0;
+    try
+    {
+       nRows = DBHandler::getInstance()->querySize(str_select);
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return qstrReturnVal;
+    }
+    // ---------------------------------------
+    if (nRows > 0)
+    {
+        QString qstrAddress, qstrFirstAddress, qstrInactiveAddress;
+        bool bActive  = false;
+        bool bPrimary = false;
+
+        int nFound = 0;
+        for (int nCurrentRow = 0; nCurrentRow < nRows; ++nCurrentRow)
+        {
+            const QString temp = DBHandler::getInstance()->queryString(str_select, 0, nCurrentRow);
+            const int nActive  = DBHandler::getInstance()->queryInt(str_select, 1, nCurrentRow);
+            const int nPrimary = DBHandler::getInstance()->queryInt(str_select, 2, nCurrentRow);
+
+            bActive  = !(0 == nActive);
+            bPrimary = !(0 == nPrimary);
+            // --------------------------
+            if (temp.isEmpty())
+                continue;
+            qstrAddress = temp;
+            nFound++;
+            // --------------------------
+            if (!bActive)
+                qstrInactiveAddress = qstrAddress;
+            else if (1 == nFound)
+                qstrFirstAddress = qstrAddress;
+            // --------------------------
+            if (bPrimary)
+                break;
+        }
+
+        qstrReturnVal = bPrimary ? qstrAddress :
+                                   (!qstrFirstAddress.isEmpty() ? qstrFirstAddress : qstrInactiveAddress);
+    }
+    // ---------------------------------------
+    return qstrReturnVal;
+}
+
+
+void MTContactHandler::clearClaimsForNym(const QString & qstrNymId)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    if (qstrNymId.isEmpty())
+        return;
+    // ------------------------------------------------------------
+    QString str_delete_claim  = QString("DELETE FROM `claim` WHERE `claim_nym_id`='%1'").arg(qstrNymId);
+    QString str_delete_verify = QString("DELETE FROM `claim_verification` WHERE `ver_verifier_nym_id`='%1'").arg(qstrNymId);
+
+    try {
+        DBHandler::getInstance()->runQuery(str_delete_claim);
+        DBHandler::getInstance()->runQuery(str_delete_verify);
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return;
+    }
+}
+
+bool MTContactHandler::upsertClaim(opentxs::Nym& nym, const opentxs::Claim& claim)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    const opentxs::Identifier nym_id(nym);
+    const opentxs::String     strNym(nym_id);
+    const std::string         str_nym_id(strNym.Get());
+    const QString             qstrNymId(QString::fromStdString(str_nym_id));
+
+    // Claim fields: identifier, section, type, value, start, end, attributes
+    //typedef std::tuple<std::string, uint32_t, uint32_t, std::string, int64_t, int64_t, std::set<uint32_t>> Claim;
+    const QString            claim_id         = QString::fromStdString(std::get<0>(claim)); // identifier
+    const uint32_t           claim_section    = std::get<1>(claim); // section
+    const uint32_t           claim_type       = std::get<2>(claim); // type
+    const QString            claim_value      = QString::fromStdString(std::get<3>(claim)); // value
+    const int64_t            claim_start      = std::get<4>(claim); // start
+    const int64_t            claim_end        = std::get<5>(claim); // end
+    const std::set<uint32_t> claim_attributes = std::get<6>(claim); // attributes
+
+    bool claim_att_active  = false;
+    bool claim_att_primary = false;
+
+    opentxs::NumList numlistAttributes;
+    for (auto& attribute: claim_attributes)
+    {
+        numlistAttributes.Add(attribute);
+
+        if (opentxs::proto::CITEMATTR_ACTIVE  == attribute) claim_att_active  = true;
+        if (opentxs::proto::CITEMATTR_PRIMARY == attribute) claim_att_primary = true;
+    }
+
+    opentxs::String strAttributes;
+    numlistAttributes.Output(strAttributes);
+    const std::string str_attributes(strAttributes.Get());
+    const QString qstrAttributes(QString::fromStdString(str_attributes));
+    // ------------------------------------------------------------
+    QString str_select_count = QString("SELECT claim_section FROM `claim` WHERE `claim_id`='%1' LIMIT 0,1").arg(claim_id);
+
+    const bool bClaimExists = (DBHandler::getInstance()->querySize(str_select_count) > 0);
+    // ------------------------------------------------------------
+    // TODO: Do a real upsert here instead of this crap.
+    // UPDATE: Upsert is only possible if you replace ALL fields.
+    //
+    QString queryStr;
+    if (!bClaimExists)
+        queryStr = QString("INSERT INTO `claim`"
+                           " (`claim_id`, `claim_nym_id`, `claim_section`, `claim_type`, `claim_value`,"
+                           "  `claim_start`, `claim_end`, `claim_attributes`, `claim_att_active`, `claim_att_primary`)"
+                           "  VALUES(:claim_idBlah, :claim_nym_idBlah, :claim_sectionBlah, :claim_typeBlah, :claim_valueBlah,"
+                           ":claim_startBlah , :claim_endBlah, :claim_attributesBlah, :claim_att_activeBlah, :claim_att_primaryBlah)");
+
+    else
+        queryStr = QString("UPDATE `claim` SET"
+                           " `claim_nym_id`=:claim_nym_idBlah, `claim_section`=:claim_sectionBlah,`claim_type`=:claim_typeBlah,"
+                           " `claim_value`=:claim_valueBlah,`claim_start`=:claim_startBlah,`claim_end`=:claim_endBlah,"
+                           " `claim_attributes`=:claim_attributesBlah,`claim_att_active`=:claim_att_activeBlah,"
+                           " `claim_att_primary`=:claim_att_primaryBlah WHERE `claim_id`=:claim_idBlah");
+    bool bRan = false;
+
+    try
+    {
+    #ifdef CXX_11
+        std::unique_ptr<DBHandler::PreparedQuery> qu;
+    #else /* CXX_11?  */
+        std::auto_ptr<DBHandler::PreparedQuery> qu;
+    #endif /* CXX_11?  */
+        qu.reset (DBHandler::getInstance ()->prepareQuery (queryStr));
+        // ---------------------------------------------
+        qu->bind (":claim_idBlah", claim_id);
+        qu->bind (":claim_nym_idBlah", qstrNymId);
+        qu->bind (":claim_sectionBlah", claim_section);
+        qu->bind (":claim_typeBlah", claim_type);
+        qu->bind (":claim_valueBlah", claim_value);
+        qu->bind (":claim_startBlah", QVariant::fromValue(claim_start));
+        qu->bind (":claim_endBlah", QVariant::fromValue(claim_end));
+        qu->bind (":claim_attributesBlah", qstrAttributes);
+        qu->bind (":claim_att_activeBlah", (claim_att_active ? 1 : 0));
+        qu->bind (":claim_att_primaryBlah", (claim_att_primary ? 1 : 0));
+
+        bRan = DBHandler::getInstance ()->runQuery (qu.release ());
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return false;
+    }
+    // -----------------------------
+    if (bClaimExists)
+    {
+        if (bRan)
+            return true;
+        else
+            return false;
+    }
+    // -----------------------------
+    const int nRowId = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `claim`", 0, 0);
+    return (nRowId > 0);
+}
+
+
+
+
+bool MTContactHandler::upsertClaimVerification(const std::string & claimant_nym_id,
+                                               const std::string & verifier_nym_id,
+                                               const opentxs::OT_API::Verification & verification,
+                                               const bool bIsInternal/*=true*/)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    const QString qstrVerifierNymId(QString::fromStdString(verifier_nym_id));
+    // ---------------------------------------------------
+    // verification identifier, claim identifier, polarity, start time, end time, signature
+//  typedef std::tuple<std::string, std::string, bool, int64_t, int64_t, std::string> Verification;
+
+    const QString  ver_id       = QString::fromStdString(std::get<0>(verification));
+    const QString  ver_claim_id = QString::fromStdString(std::get<1>(verification));
+    const bool     ver_polarity = std::get<2>(verification);
+    const int64_t  ver_start    = std::get<3>(verification);
+    const int64_t  ver_end      = std::get<4>(verification);
+
+
+
+
+    qDebug() << "DEBUGGING: upsertClaimVerification: ver_polarity according to OT is NOT neutral!: " << QString(ver_polarity ? "True" : "False");
+
+
+    QString  ver_sig("");
+
+    if (!bIsInternal)
+        ver_sig = QString::fromStdString(std::get<5>(verification));
+    // NOTE: Signature is always an empty string for internal verifications.
+    // That's because OT already verified it, before even allowing it onto the
+    // internal list in the first place. So we wouldn't have even seen this at all,
+    // if it hadn't already been known to be verified.
+    // Therefore OT just passes an empty string for the signature, and we mark in the database
+    // table that the signature has verified (because according to OT, it has.)
+    // So then why have "signature" and "signature verified" fields at all? Because when we
+    // import the EXTERNAL claim verifications, the signature is not necessarily verified yet,
+    // so we will need to store it -- and mark it as not verified -- until such time as we are
+    // able to verify it, probably in a background process, download the related Nym, verify his
+    // signature, then mark it as verified in the DB.
+    // ---------------------------------------------------
+    QString str_select_count = QString("SELECT ver_id FROM `claim_verification` WHERE `ver_id`='%1' LIMIT 0,1").arg(ver_id);
+
+    const bool bVerificationExists = (DBHandler::getInstance()->querySize(str_select_count) > 0);
+    // ------------------------------------------------------------
+//    QString create_claim_verification_table = "CREATE TABLE IF NOT EXISTS claim_verification"
+//           "(ver_id TEXT PRIMARY KEY,"
+//           " ver_claimant_nym_id TEXT,"
+//           " ver_verifier_nym_id TEXT,"
+//           " ver_claim_id TEXT,"
+//           " ver_polarity INTEGER,"
+//           " ver_start INTEGER,"8 AM
+//           " ver_end INTEGER,"
+//           " ver_signature TEXT,"
+//           " ver_signature_verified INTEGER"
+//           ")";
+
+    // TODO: Do a real upsert here instead of this crap.
+    //
+    QString str_insert;
+    if (!bVerificationExists)
+        str_insert = QString("INSERT INTO `claim_verification`"
+                                 " (`ver_id`, `ver_claimant_nym_id`, `ver_verifier_nym_id`, `ver_claim_id`, `ver_polarity`,"
+                                 "  `ver_start`, `ver_end`, `ver_signature`, `ver_signature_verified`)"
+                                 "  VALUES('%1', '%2', '%3', '%4', %5, %6, %7, '%8', %9)").
+                arg(ver_id).arg(QString::fromStdString(claimant_nym_id)).arg(qstrVerifierNymId).arg(ver_claim_id).
+                arg(ver_polarity ? claimPolarityToInt(opentxs::OT_API::ClaimPolarity::POSITIVE) : claimPolarityToInt(opentxs::OT_API::ClaimPolarity::NEGATIVE)).
+                arg(ver_start).
+                arg(ver_end).arg(ver_sig).
+                arg(bIsInternal ? 1 : 0);
+    else
+        str_insert = QString("UPDATE `claim_verification` SET"
+                             " `ver_claimant_nym_id`='%1', `ver_verifier_nym_id`='%2',`ver_claim_id`='%3',`ver_polarity`=%4,`ver_start`=%5,`ver_end`=%6,"
+                             " `ver_signature`='%7' WHERE `ver_id`='%8'").
+                arg(QString::fromStdString(claimant_nym_id)).arg(qstrVerifierNymId).arg(ver_claim_id).
+                arg(ver_polarity ? claimPolarityToInt(opentxs::OT_API::ClaimPolarity::POSITIVE) : claimPolarityToInt(opentxs::OT_API::ClaimPolarity::NEGATIVE)).
+                arg(ver_start).
+                arg(ver_end).arg(ver_sig).
+                arg(ver_id);
+    const bool bRan = DBHandler::getInstance()->runQuery(str_insert);
+
+    if (bVerificationExists)
+    {
+        if (bRan)
+            return true;
+        else
+            return false;
+    }
+
+    const int nRowId = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `claim_verification`", 0, 0);
+    return (nRowId > 0);
+}
+
+bool MTContactHandler::ArchivedTradeReceiptExists(int64_t lReceiptID)
+{
+    QMutexLocker locker(&m_Mutex);
+    QString str_select = QString("SELECT * FROM `trade_archive` WHERE `receipt_id`=%1 LIMIT 0,1").arg(lReceiptID);
+    int nRows = DBHandler::getInstance()->querySize(str_select);
+    return (nRows > 0);
+}
 
 bool MTContactHandler::ContactExists(int nContactID)
 {
@@ -167,7 +1022,8 @@ bool MTContactHandler::VerifyNymOnExistingContact(int nContactID, QString nym_id
 }
 
 
-bool MTContactHandler::AddNymToExistingContact(int nContactID, QString nym_id_string)
+
+bool MTContactHandler::AddNymToExistingContact(int nContactID, QString nym_id_string, QString payment_code/*=""*/)
 {
     QMutexLocker locker(&m_Mutex);
 
@@ -180,7 +1036,7 @@ bool MTContactHandler::AddNymToExistingContact(int nContactID, QString nym_id_st
         //
         QString str_select = QString("SELECT `contact_id` FROM `nym` WHERE `nym_id`='%1'").arg(nym_id_string);
 
-        qDebug() << QString("Running query: %1").arg(str_select);
+//      qDebug() << QString("Running query: %1").arg(str_select);
 
         int  nRows      = DBHandler::getInstance()->querySize(str_select);
         bool bNymExists = (nRows > 0); // Whether the contact ID was good or not, the Nym itself DOES exist.
@@ -189,11 +1045,13 @@ bool MTContactHandler::AddNymToExistingContact(int nContactID, QString nym_id_st
 
         if (!bNymExists)
             str_insert_nym = QString("INSERT INTO `nym` "
-                                     "(`nym_id`, `contact_id`) "
-                                     "VALUES('%1', %2)").arg(nym_id_string).arg(nContactID);
-//      else if (bHadToCreateContact)
+                                     "(`nym_id`, `contact_id`, `nym_payment_code`) "
+                                     "VALUES('%1', %2, '%3')").arg(nym_id_string).arg(nContactID).arg(payment_code);
+        else if (!payment_code.isEmpty())
+            str_insert_nym = QString("UPDATE `nym` SET `contact_id`=%1,`nym_payment_code`='%2' WHERE `nym_id`='%3'")
+                    .arg(nContactID).arg(payment_code).arg(nym_id_string);
         else
-            str_insert_nym = QString("UPDATE nym SET contact_id=%1 WHERE nym_id='%2'").arg(nContactID).arg(nym_id_string);
+            str_insert_nym = QString("UPDATE `nym` SET `contact_id`=%1 WHERE `nym_id`='%2'").arg(nContactID).arg(nym_id_string);
 
         if (!str_insert_nym.isEmpty())
         {
@@ -402,10 +1260,401 @@ bool MTContactHandler::DeleteSmartContract(int nID)
     return DBHandler::getInstance()->runQuery(str_delete);
 }
 
+bool MTContactHandler::DeleteManagedPassphrase(int nID)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_delete = QString("DELETE FROM `managed_passphrase` WHERE `passphrase_id`=%1").arg(nID);
+
+    return DBHandler::getInstance()->runQuery(str_delete);
+}
+
 QString MTContactHandler::GetSmartContract(int nID)
 {
     return MTContactHandler::GetValueByID(nID, "template_contents", "smart_contract", "template_id");
 }
+
+// -------------------------------------------------
+
+QString MTContactHandler::GetMessageBody(int nID)
+{
+    return MTContactHandler::GetEncryptedValueByID(nID, "body", "message_body", "message_id");
+}
+
+bool MTContactHandler::UpdateMessageBody(int nMessageID, const QString & qstrBody)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    return LowLevelUpdateMessageBody(nMessageID, qstrBody);
+}
+
+bool MTContactHandler::DeleteMessageBody(int nID)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_delete = QString("DELETE FROM `message_body` WHERE `message_id`=%1").arg(nID);
+
+    return DBHandler::getInstance()->runQuery(str_delete);
+}
+
+
+// Since there is a message table, the message_id is already pre-existing by the time
+// the entry is added to the message_body table. (FYI.) This function assumes that
+// the message was JUST added, and that the body we're about to add corresponds to that
+// same message. So we simply look up the message_id for the last row inserted and then
+// add the body to the message_body table using that same ID.
+//
+bool MTContactHandler::CreateMessageBody(QString qstrBody)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    const int nID = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `message`", 0, 0);
+    // ----------------------------------------
+    if (nID > 0)
+    {
+        QString str_insert = QString("INSERT INTO `message_body` "
+                                     "(`message_id`) "
+                                     "VALUES(%1)").arg(nID);
+        DBHandler::getInstance()->runQuery(str_insert);
+        // ----------------------------------------
+        const int nMessageID = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `message_body`", 0, 0);
+
+        if (nMessageID == nID)
+        {
+            bool bUpdated = LowLevelUpdateMessageBody(nMessageID, qstrBody);
+
+            if (!bUpdated)
+            {
+                qDebug() << QString("Failed updating message body for message_id: %1").arg(nMessageID);
+                return false;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MTContactHandler::LowLevelUpdateMessageBody(int nMessageID, const QString & qstrBody)
+{
+//  NOTE: This function ASSUMES that the calling function already locked the Mutex.
+//  QMutexLocker locker(&m_Mutex);
+
+    try
+    {
+        // The body is encrypted.
+        //
+        bool bSetValue = SetEncryptedValueByID(nMessageID, qstrBody, "body", "message_body", "message_id");
+        Q_UNUSED(bSetValue);
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return false;
+    }
+
+    return true;
+}
+
+
+// --------------------------------------------
+
+int MTContactHandler::GetOrCreateLiveAgreementId(const int64_t transNumDisplay, const QString & notaryID, const QString & qstrEncodedMemo, const int nFolder) // returns nAgreementId
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_select = QString("SELECT `agreement_id` FROM `agreement` WHERE `txn_id_display`=%1 AND `notary_id`='%2' LIMIT 0,1").arg(transNumDisplay).arg(notaryID);
+    const int nRows = DBHandler::getInstance()->querySize(str_select);
+
+    if (nRows > 0)
+        return DBHandler::getInstance()->queryInt(str_select, 0, 0);
+    // ----------------------------------
+    // Let's create it then.
+    //
+    const int have_read = 0;
+    try
+    {
+        QString queryStr = "INSERT INTO `agreement` "
+                           "(`agreement_id`, `have_read`, `txn_id_display`, `notary_id`, `memo`, `folder`) "
+                           "VALUES(NULL, :blah_have_read, :blah_txn_id_display, :blah_notary_id, :blah_memo, :blah_folder)";
+    #ifdef CXX_11
+        std::unique_ptr<DBHandler::PreparedQuery> qu;
+    #else /* CXX_11?  */
+        std::auto_ptr<DBHandler::PreparedQuery> qu;
+    #endif /* CXX_11?  */
+        qu.reset (DBHandler::getInstance ()->prepareQuery (queryStr));
+        qu->bind (":blah_have_read", have_read);
+        qu->bind (":blah_txn_id_display", QVariant::fromValue(transNumDisplay));
+        qu->bind (":blah_notary_id", notaryID);
+        qu->bind (":blah_memo", qstrEncodedMemo);
+        qu->bind (":blah_folder", nFolder);
+        DBHandler::getInstance ()->runQuery (qu.release ());
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return 0;
+    }
+    // ----------------------------------
+//    QString str_insert = QString("INSERT INTO `agreement` "
+//                                 "(`agreement_id`, `have_read`, `txn_id_display`, `notary_id`, `memo`, `folder`) "
+//                                 "VALUES(NULL, %1, %2, '%3', '%4', %5)").arg(0).arg(transNumDisplay).arg(notaryID).arg(qstrEncodedMemo).arg(nFolder);
+//    DBHandler::getInstance()->runQuery(str_insert);
+    // ----------------------------------------
+    return DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `agreement`", 0, 0);
+}
+
+
+bool MTContactHandler::UpdateLiveAgreementRecord(const int nAgreementId, const int64_t nNewestReceiptNum, const int nNewestKnownState, const int64_t timestamp)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    try
+    {
+        QString qstrKnownState;
+
+        if (nNewestKnownState > 0)
+            qstrKnownState = " `newest_known_state` = :blah_newest_known_state,";
+        else
+            qstrKnownState = "";
+
+        QString queryStr =
+                 QString("UPDATE `agreement` SET"
+                         " `have_read` = 0,"
+                         " `newest_receipt_id` = :blah_newest_receipt_id,"
+                         "%1" // newest_known_state
+                         " `timestamp` = :blah_timestamp"
+                         " WHERE `agreement_id` = :blah_agreement_id").arg(qstrKnownState);
+    #ifdef CXX_11
+        std::unique_ptr<DBHandler::PreparedQuery> qu;
+    #else /* CXX_11?  */
+        std::auto_ptr<DBHandler::PreparedQuery> qu;
+    #endif /* CXX_11?  */
+        qu.reset (DBHandler::getInstance ()->prepareQuery (queryStr));
+        // ---------------------------------------------
+        qu->bind (":blah_newest_receipt_id", QVariant::fromValue(nNewestReceiptNum));
+        if (nNewestKnownState > 0)
+            qu->bind (":blah_newest_known_state", nNewestKnownState);
+        qu->bind (":blah_timestamp", QVariant::fromValue(timestamp));
+        qu->bind (":blah_agreement_id", nAgreementId);
+
+        DBHandler::getInstance ()->runQuery (qu.release ());
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return false;
+    }
+//  QString str_update= QString("UPDATE `agreement` SET `have_read`=0, `newest_receipt_id`=%1,`newest_known_state`=%2,`timestamp`=%3 WHERE `agreement_id`=%4").
+//          arg(nNewestReceiptNum).arg(nNewestKnownState).arg(timestamp).arg(nAgreementId);
+//  qDebug() << QString("Running query: %1").arg(str_update);
+//  DBHandler::getInstance()->runQuery(str_update);
+
+    return true;
+}
+
+// ----------------------------------------------------------
+
+// returns nAgreementReceiptKey
+int MTContactHandler::DoesAgreementReceiptAlreadyExist(const int nAgreementId, const int64_t receiptNum, const QString & qstrNymId)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_select = QString("SELECT `agreement_receipt_key` FROM `agreement_receipt` WHERE `agreement_id`=%1 AND `receipt_id`=%2 AND `my_nym_id`='%3' LIMIT 0,1").
+            arg(nAgreementId).arg(receiptNum).arg(qstrNymId);
+    int nRows = DBHandler::getInstance()->querySize(str_select);
+
+    if (0 >= nRows)
+        return 0;
+
+    return DBHandler::getInstance()->queryInt(str_select, 0, 0);
+}
+
+bool MTContactHandler::CreateAgreementReceiptBody(const int nAgreementReceiptKey, QString & qstrReceiptBody) // When this is called, we already know the specific receipt is being added for the first time.
+{
+    QMutexLocker locker(&m_Mutex);
+    // ----------------------------------------
+    if (nAgreementReceiptKey > 0)
+    {
+        QString str_insert = QString("INSERT INTO `receipt_body` "
+                                     "(`agreement_receipt_key`) "
+                                     "VALUES(%1)").arg(nAgreementReceiptKey);
+        DBHandler::getInstance()->runQuery(str_insert);
+        // ----------------------------------------
+        const int nReceiptKey = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `receipt_body`", 0, 0);
+
+        if (nReceiptKey == nAgreementReceiptKey)
+        {
+            const bool bUpdated = LowLevelUpdateReceiptBody(nReceiptKey, qstrReceiptBody);
+
+            if (!bUpdated)
+            {
+                qDebug() << QString("Failed updating receipt body for agreement_receipt_key: %1").arg(nReceiptKey);
+                return false;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MTContactHandler::LowLevelUpdateReceiptBody(int nAgreementReceiptKey, const QString & qstrBody)
+{
+//  NOTE: This function ASSUMES that the calling function already locked the Mutex.
+//  QMutexLocker locker(&m_Mutex);
+
+    if (!qstrBody.isEmpty())
+    {
+        try
+        {
+            // The body is encrypted.
+            //
+            bool bSetValue = SetEncryptedValueByID(nAgreementReceiptKey, qstrBody, "body", "receipt_body", "agreement_receipt_key");
+            Q_UNUSED(bSetValue);
+        }
+        catch (const std::exception& exc)
+        {
+            qDebug () << "Error: " << exc.what ();
+            return false;
+        }
+    }
+    // --------------------------
+    return true;
+}
+
+bool MTContactHandler::DeleteAgreementReceiptBody(const int nID) // nID is nAgreementReceiptKey
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_delete = QString("DELETE FROM `receipt_body` WHERE `agreement_receipt_key`=%1").arg(nID);
+
+    return DBHandler::getInstance()->runQuery(str_delete);
+}
+
+QString MTContactHandler::GetAgreementReceiptBody(const int nID) // nID is nAgreementReceiptKey
+{
+    return MTContactHandler::GetEncryptedValueByID(nID, "body", "receipt_body", "agreement_receipt_key");
+}
+
+// ----------------------------------------------------------
+
+QString MTContactHandler::GetPaymentBody(int nID)
+{
+    return MTContactHandler::GetEncryptedValueByID(nID, "body", "payment_body", "payment_id");
+}
+
+QString MTContactHandler::GetPaymentPendingBody(int nID)
+{
+    return MTContactHandler::GetEncryptedValueByID(nID, "pending_body", "payment_body", "payment_id");
+}
+
+bool MTContactHandler::UpdatePaymentBody(int nPaymentID, const QString qstrBody, const QString qstrPendingBody)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    return LowLevelUpdatePaymentBody(nPaymentID, qstrBody, qstrPendingBody);
+}
+
+bool MTContactHandler::DeletePaymentBody(int nID)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_delete = QString("DELETE FROM `payment_body` WHERE `payment_id`=%1").arg(nID);
+
+    return DBHandler::getInstance()->runQuery(str_delete);
+}
+
+// Returns 0 if not found.
+//
+int MTContactHandler::GetPaymentIdByTxnDisplayId(int64_t lTxnDisplayId, QString qstrNymId)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_select = QString("SELECT `payment_id` FROM `payment` WHERE `txn_id_display`=%1 AND `my_nym_id`='%2' LIMIT 0,1").arg(lTxnDisplayId).arg(qstrNymId);
+    int nRows = DBHandler::getInstance()->querySize(str_select);
+
+    if (0 >= nRows)
+        return 0;
+
+    return DBHandler::getInstance()->queryInt(str_select, 0, 0);
+}
+
+// Since there is a payment table, the payment_id is already pre-existing by the time
+// the entry is added to the payment_body table. (FYI.) This function assumes that
+// the payment was JUST added, and that the body we're about to add corresponds to that
+// same payment. So we simply look up the payment_id for the last row inserted and then
+// add the body to the payment_body table using that same ID.
+//
+bool MTContactHandler::CreatePaymentBody(QString qstrBody, QString qstrPendingBody)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    const int nID = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `payment`", 0, 0);
+    // ----------------------------------------
+    if (nID > 0)
+    {
+        QString str_insert = QString("INSERT INTO `payment_body` "
+                                     "(`payment_id`) "
+                                     "VALUES(%1)").arg(nID);
+        DBHandler::getInstance()->runQuery(str_insert);
+        // ----------------------------------------
+        const int nPaymentID = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `payment_body`", 0, 0);
+
+        if (nPaymentID == nID)
+        {
+            bool bUpdated = LowLevelUpdatePaymentBody(nPaymentID, qstrBody, qstrPendingBody);
+
+            if (!bUpdated)
+            {
+                qDebug() << QString("Failed updating payment body for payment_id: %1").arg(nPaymentID);
+                return false;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MTContactHandler::LowLevelUpdatePaymentBody(int nPaymentID, const QString qstrBody, const QString qstrPendingBody)
+{
+//  NOTE: This function ASSUMES that the calling function already locked the Mutex.
+//  QMutexLocker locker(&m_Mutex);
+
+    if (!qstrBody.isEmpty())
+    {
+        try
+        {
+            // The body is encrypted.
+            //
+            bool bSetValue = SetEncryptedValueByID(nPaymentID, qstrBody, "body", "payment_body", "payment_id");
+            Q_UNUSED(bSetValue);
+        }
+        catch (const std::exception& exc)
+        {
+            qDebug () << "Error: " << exc.what ();
+            return false;
+        }
+    }
+    // --------------------------
+    if (!qstrPendingBody.isEmpty())
+    {
+        try
+        {
+            // The pending body is encrypted.
+            //
+            bool bSetValue = SetEncryptedValueByID(nPaymentID, qstrPendingBody, "pending_body", "payment_body", "payment_id");
+            Q_UNUSED(bSetValue);
+        }
+        catch (const std::exception& exc)
+        {
+            qDebug () << "Error: " << exc.what ();
+            return false;
+        }
+    }
+    return true;
+}
+
+
+// ----------------------------------------------------------
 
 // The contact ID (unlike all the other IDs) is an int instead of a string.
 // Therefore we just convert it to a string and return it in a map in the same
@@ -452,6 +1701,46 @@ bool MTContactHandler::GetContacts(mapIDName & theMap)
 
 // ---------------------------------------------------------------------
 
+bool MTContactHandler::GetPaymentCodes(mapIDName & theMap, int nFilterByContact)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_select = QString("SELECT * FROM `nym` WHERE `contact_id`=%1").arg(nFilterByContact);
+//  QString str_select = QString("SELECT * FROM `nym` WHERE `contact_id`=%1 LIMIT 0,1").arg(nFilterByContact);
+
+    bool bFoundAny = false;
+    int  nRows     = DBHandler::getInstance()->querySize(str_select);
+
+    for (int ii=0; ii < nRows; ii++)
+    {
+        QString nym_id       = DBHandler::getInstance()->queryString(str_select, 0, ii);
+        QString nym_name     = DBHandler::getInstance()->queryString(str_select, 2, ii);
+        QString payment_code = DBHandler::getInstance()->queryString(str_select, 3, ii);
+
+        if (!nym_id.isEmpty() && !payment_code.isEmpty())
+        {
+            bFoundAny = true;
+
+            if (!nym_name.isEmpty())
+            {
+                //Decode base64.
+//                nym_name = Decode(nym_name);
+            }
+            else
+            {
+                MTNameLookupQT theLookup;
+                nym_name = QString::fromStdString(theLookup.GetNymName(nym_id.toStdString(), ""));
+            }
+            // ----------------------------
+            // At this point we have the payment code *and* the nym name.
+            // So we can add them to our map...
+            theMap.insert(payment_code, nym_name);
+        }
+    }
+    // ---------------------------------------------------------------------
+    return bFoundAny;
+}
+
 bool MTContactHandler::GetNyms(mapIDName & theMap, int nFilterByContact)
 {
     QMutexLocker locker(&m_Mutex);
@@ -473,13 +1762,16 @@ bool MTContactHandler::GetNyms(mapIDName & theMap, int nFilterByContact)
 
             if (!nym_name.isEmpty())
             {
-//              qDebug() << QString("About to decode name: %1").arg(nym_name);
+//                qDebug() << QString("About to decode name: %1").arg(nym_name);
 
                 //Decode base64.
-                nym_name = Decode(nym_name);
+//              nym_name = Decode(nym_name);
             }
             else
-                nym_name = QString::fromStdString(opentxs::OTAPI_Wrap::It()->GetNym_Name(nym_id.toStdString()));
+            {
+                MTNameLookupQT theLookup;
+                nym_name = QString::fromStdString(theLookup.GetNymName(nym_id.toStdString(), ""));
+            }
             // ----------------------------
             // At this point we have the nym ID *and* the nym name.
             // So we can add them to our map...
@@ -554,7 +1846,7 @@ bool MTContactHandler::GetAccounts(mapIDName & theMap, QString filterByNym, QStr
 
         if (!display_name.isEmpty())
         {
-//            qDebug() << QString("About to decode name: %1").arg(display_name);
+//          qDebug() << QString("About to decode name: %1").arg(display_name);
 
             //Decode base64.
             display_name = Decode(display_name);
@@ -591,6 +1883,303 @@ bool MTContactHandler::GetAccounts(mapIDName & theMap, QString filterByNym, QStr
     return bFoundAccounts;
 }
 
+int MTContactHandler::CreateManagedPassphrase(const QString & qstrTitle, const QString & qstrUsername, const opentxs::OTPassword & thePassphrase,
+                                              const QString & qstrURL,   const QString & qstrNotes)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_insert = QString("INSERT INTO `managed_passphrase` "
+                                 "(`passphrase_id`) "
+                                 "VALUES(NULL)");
+
+    DBHandler::getInstance()->runQuery(str_insert);
+    // ----------------------------------------
+    int nPassphraseID = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `managed_passphrase`", 0, 0);
+
+    if (nPassphraseID > 0)
+    {
+        bool bUpdated = LowLevelUpdateManagedPassphrase(nPassphraseID, qstrTitle, qstrUsername, thePassphrase, qstrURL,  qstrNotes);
+
+        if (!bUpdated)
+            qDebug() << QString("Failed updating passphrase entry: %1").arg(nPassphraseID);
+    }
+
+    return nPassphraseID;
+}
+
+
+bool MTContactHandler::SetPaymentFlags(int nPaymentID, qint64 nFlags)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    qint64 & storedFlags = nFlags;
+
+    try
+    {
+        QString queryStr("UPDATE `payment`"
+                         " SET `flags` = :strdflags"
+                         " WHERE `payment_id` = :pymntid");
+    #ifdef CXX_11
+        std::unique_ptr<DBHandler::PreparedQuery> qu;
+    #else /* CXX_11?  */
+        std::auto_ptr<DBHandler::PreparedQuery> qu;
+    #endif /* CXX_11?  */
+        qu.reset (DBHandler::getInstance ()->prepareQuery (queryStr));
+        // ---------------------------------------------
+        qu->bind (":strdflags", storedFlags);
+        qu->bind (":pymntid", nPaymentID);
+
+        DBHandler::getInstance ()->runQuery (qu.release ());
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return false;
+    }
+
+    return true;
+}
+
+// This function assumes that any data needing to be encrypted and/or encoded,
+// has already been so-transformed before passed to this function.
+//
+bool MTContactHandler::UpdatePaymentRecord(int nPaymentID, QMap<QString, QVariant>& mapFinalValues)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    try
+    {
+        QString queryDetails("");
+        int nValuesAddedToQuery = 0;
+
+        for (QMap<QString, QVariant>::iterator it_map = mapFinalValues.begin();
+             it_map != mapFinalValues.end(); ++it_map)
+        {
+            const QString  & qstrKey = it_map.key();
+            // If this isn't the first value being added to the query, then add a comma first.
+            if (nValuesAddedToQuery++ > 0) queryDetails += QString(", ");
+            queryDetails += QString("`%1` = :key_%2").arg(qstrKey).arg(qstrKey);
+        }
+        // ---------------------------------------------
+        QString queryStr = QString("UPDATE `payment`"
+                                   " SET %1"
+                                   " WHERE `payment_id` = :pymntid").arg(queryDetails);
+    #ifdef CXX_11
+        std::unique_ptr<DBHandler::PreparedQuery> qu;
+    #else /* CXX_11?  */
+        std::auto_ptr<DBHandler::PreparedQuery> qu;
+    #endif /* CXX_11?  */
+        qu.reset (DBHandler::getInstance ()->prepareQuery (queryStr));
+        // ---------------------------------------------
+        // Now we bind all the values.
+        //
+        for (QMap<QString, QVariant>::iterator it_map = mapFinalValues.begin();
+             it_map != mapFinalValues.end(); ++it_map)
+        {
+            const QString  & qstrKey = it_map.key();
+            const QVariant & qValue  = it_map.value();
+
+            const QString qstrSqlSubstitute = QString(":key_%1").arg(qstrKey);
+
+//            bool bIsInt = qValue.type() == QVariant::Int;
+//
+//            if (bIsInt)
+//                qDebug() << "BINDING: KEY: " << qstrKey << " VALUE: " << qValue.toInt();
+//            else
+//                qDebug() << "BINDING: KEY: " << qstrKey << " VALUE: " << qValue.toString();
+
+            qu->bind (qstrSqlSubstitute, qValue);
+        }
+        // ---------------------------------------------
+        qu->bind (":pymntid", nPaymentID);
+
+        DBHandler::getInstance ()->runQuery (qu.release ());
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return false;
+    }
+
+    return true;
+}
+
+bool MTContactHandler::LowLevelUpdateManagedPassphrase(int nPassphraseID,
+                                                       const QString & qstrTitle, const QString & qstrUsername, const opentxs::OTPassword & thePassphrase,
+                                                       const QString & qstrURL,   const QString & qstrNotes)
+{
+//  NOTE: This function ASSUMES that the calling function already locked the Mutex.
+//  QMutexLocker locker(&m_Mutex);
+
+    try
+    {
+        QString queryStr = "UPDATE `managed_passphrase`"
+                           "  SET `passphrase_title` = :passtitle,`passphrase_username` = :passusername,`passphrase_url` = :passurl"
+                           "  WHERE `passphrase_id` = :passid";
+    #ifdef CXX_11
+        std::unique_ptr<DBHandler::PreparedQuery> qu;
+    #else /* CXX_11?  */
+        std::auto_ptr<DBHandler::PreparedQuery> qu;
+    #endif /* CXX_11?  */
+        qu.reset (DBHandler::getInstance ()->prepareQuery (queryStr));
+        qu->bind (":passid", nPassphraseID);
+        qu->bind (":passtitle", qstrTitle);
+        qu->bind (":passusername", qstrUsername);
+        qu->bind (":passurl", qstrURL);
+        DBHandler::getInstance ()->runQuery (qu.release ());
+        // ----------------------------------
+        // Set the passphrase itself (encrypted.)
+        //
+        bool bSetValue = SetEncryptedValueByID(nPassphraseID, QString::fromUtf8(thePassphrase.getPassword()),
+                                               "passphrase_passphrase", "managed_passphrase", "passphrase_id");
+        bSetValue = SetEncryptedValueByID(nPassphraseID, qstrNotes,
+                                          "passphrase_notes", "managed_passphrase", "passphrase_id");
+        Q_UNUSED(bSetValue);
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return false;
+    }
+
+    return true;
+}
+
+bool MTContactHandler::UpdateManagedPassphrase(int nPassphraseID,
+                                               const QString & qstrTitle, const QString & qstrUsername, const opentxs::OTPassword & thePassphrase,
+                                               const QString & qstrURL,   const QString & qstrNotes)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    return LowLevelUpdateManagedPassphrase(nPassphraseID, qstrTitle, qstrUsername, thePassphrase, qstrURL,  qstrNotes);
+}
+
+bool MTContactHandler::GetManagedPassphrase(int nPassphraseID,
+                                            QString & qstrTitle, QString & qstrUsername, opentxs::OTPassword & thePassphrase,
+                                            QString & qstrURL,   QString & qstrNotes)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    try
+    {
+        DBHandler & db = *DBHandler::getInstance();
+
+        QString queryStr = "SELECT `passphrase_title`, `passphrase_username`, `passphrase_url` FROM `managed_passphrase`"
+                           "  WHERE `passphrase_id` = :passid";
+#ifdef CXX_11
+        std::unique_ptr<DBHandler::PreparedQuery> qu;
+#else /* CXX_11?  */
+        std::auto_ptr<DBHandler::PreparedQuery> qu;
+#endif /* CXX_11?  */
+        qu.reset (db.prepareQuery (queryStr));
+        qu->bind (":passid", nPassphraseID);
+        QSqlRecord rec = db.queryOne (qu.release ());
+
+        qstrTitle    = rec.field ("passphrase_title")   .value ().toString ();
+        qstrUsername = rec.field ("passphrase_username").value ().toString ();
+        qstrURL      = rec.field ("passphrase_url")     .value ().toString ();
+        // ----------------------------------------
+        QString qstrPassphrase = GetEncryptedValueByID(nPassphraseID, "passphrase_passphrase", "managed_passphrase", "passphrase_id");
+        thePassphrase.setPassword(qstrPassphrase.toUtf8(), qstrPassphrase.length());
+        // ----------------------------------------
+        qstrNotes = GetEncryptedValueByID(nPassphraseID, "passphrase_notes", "managed_passphrase", "passphrase_id");
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+        return false;
+    }
+    // ----------------------------------------
+    return true;
+}
+
+class ManagedPassphraseFunctor
+{
+private:
+    mapIDName & m_mapTitle;
+    mapIDName & m_mapURL;
+    bool      & m_bFound;
+
+    // No default constructor.
+    ManagedPassphraseFunctor();
+
+public:
+    inline
+    ManagedPassphraseFunctor(mapIDName & mapTitle, mapIDName & mapURL, bool & bFound)
+      : m_mapTitle(mapTitle), m_mapURL(mapURL), m_bFound(bFound)
+    {}
+
+    void operator() (const QSqlRecord& rec)
+    {
+        m_bFound = true;
+
+        const int     nPassphraseID = rec.field ("passphrase_id")   .value().toInt();
+        const QString qstrTitle     = rec.field ("passphrase_title").value().toString();
+        const QString qstrURL       = rec.field ("passphrase_url")  .value().toString();
+        // -------------------------------------------------------------
+        const QString qstrID        = QString("%1").arg(nPassphraseID);
+        // -------------------------------------------------------------
+        m_mapTitle.insert(qstrID, qstrTitle);
+        m_mapURL  .insert(qstrID, qstrURL);
+    }
+};
+
+
+bool MTContactHandler::GetManagedPassphrases(mapIDName & mapTitle, mapIDName & mapURL, QString searchStr/*=""*/)
+{
+    // Get ALL managed passphrases, unless searchStr is provided, in which case use that to filter the results.
+    // Return TWO mapIDNames. One is passphraseID mapped to Title, and the other is passphraseID mapped to URL.
+    //
+    QMutexLocker locker(&m_Mutex);
+    // ----------------------------
+    bool bFound = false, bSearchStringExists = !searchStr.isEmpty();
+    DBHandler& db = *DBHandler::getInstance ();
+    // ----------------------------
+    // This is a hack I'm doing to sanitize searchStr since the way it's SUPPOSED to work
+    // (named bound values) isn't working at all.
+    //
+    QSqlField sqlField;
+
+    if (bSearchStringExists)
+    {
+        sqlField.setType(QVariant::String);
+        sqlField.setValue(searchStr);
+
+        searchStr = db.formatValue(sqlField);
+        searchStr.remove(QChar('\''));
+        searchStr.remove(QChar('\"'));
+    }
+    // ----------------------------
+    ManagedPassphraseFunctor passphraseHandler(mapTitle, mapURL, bFound);
+    QString queryStr;
+
+    if (bSearchStringExists)
+        queryStr = QString("SELECT `passphrase_id`,`passphrase_title`,`passphrase_url` FROM `managed_passphrase` "
+                             "WHERE `passphrase_title` LIKE '%1%2%1' "
+                             "OR `passphrase_username` LIKE '%1%2%1' "
+                             "OR `passphrase_url` LIKE '%1%2%1' "
+                             ).arg("%").arg(searchStr);
+    else
+        queryStr = QString("SELECT `passphrase_id`,`passphrase_title`,`passphrase_url` FROM `managed_passphrase` ");
+
+  #ifdef CXX_11
+    std::unique_ptr<DBHandler::PreparedQuery> qu;
+  #else /* CXX_11?  */
+    std::auto_ptr<DBHandler::PreparedQuery> qu;
+  #endif /* CXX_11?  */
+    qu.reset (db.prepareQuery (queryStr));
+
+    try
+    {
+        db.queryMultiple (qu.release(), passphraseHandler);
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+    }
+
+    return bFound;
+}
 
 int  MTContactHandler::CreateSmartContractTemplate(QString template_string)
 {
@@ -599,13 +2188,10 @@ int  MTContactHandler::CreateSmartContractTemplate(QString template_string)
     QString str_insert = QString("INSERT INTO `smart_contract` "
                              "(`template_id`) "
                              "VALUES(NULL)");
-//    QString str_insert = QString("INSERT INTO `smart_contract` "
-//                             "(`template_id`, `template_contents`) "
-//                             "VALUES(NULL, %1)").arg(encoded_value);
 
     qDebug() << QString("Running query: %1").arg(str_insert);
 
-    DBHandler::getInstance()->runQuery(str_insert); //resume
+    DBHandler::getInstance()->runQuery(str_insert);
     // ----------------------------------------
     int nTemplateID = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `smart_contract`", 0, 0);
 
@@ -613,6 +2199,9 @@ int  MTContactHandler::CreateSmartContractTemplate(QString template_string)
     {
         QString encoded_value = Encode(template_string);
 
+        // TODO: CHANGE THIS to use bind (there are examples in this file) so we aren't literally copying the full
+        // smart contract directly into this update statement!
+        //
         str_insert = QString("UPDATE smart_contract SET template_contents='%1' WHERE template_id='%2'").arg(encoded_value).arg(nTemplateID);
 
         qDebug() << QString("Running query: %1").arg(str_insert);
@@ -626,7 +2215,7 @@ int  MTContactHandler::CreateSmartContractTemplate(QString template_string)
 // Notice there is no "CreateContactBasedOnAcct" because you can call this first,
 // and then just call FindContactIDByAcctID.
 //
-int MTContactHandler::CreateContactBasedOnNym(QString nym_id_string, QString notary_id_string/*=QString("")*/)
+int MTContactHandler::CreateContactBasedOnNym(QString nym_id_string, QString notary_id_string/*=QString("")*/, QString payment_code/*=QString("")*/)
 {
     QMutexLocker locker(&m_Mutex);
 
@@ -689,11 +2278,13 @@ int MTContactHandler::CreateContactBasedOnNym(QString nym_id_string, QString not
 
         if (!bNymExists)
             str_insert_nym = QString("INSERT INTO `nym` "
-                                     "(`nym_id`, `contact_id`) "
-                                     "VALUES('%1', %2)").arg(nym_id_string).arg(nContactID);
-//      else if (bHadToCreateContact)
+                                     "(`nym_id`, `contact_id`, `nym_payment_code`) "
+                                     "VALUES('%1', %2, '%3')").arg(nym_id_string).arg(nContactID).arg(payment_code);
+        else if (!payment_code.isEmpty())
+            str_insert_nym = QString("UPDATE `nym` SET `contact_id`=%1,`nym_payment_code`='%2' WHERE `nym_id`='%3'")
+                    .arg(nContactID).arg(payment_code).arg(nym_id_string);
         else
-            str_insert_nym = QString("UPDATE nym SET contact_id=%1 WHERE nym_id='%2'").arg(nContactID).arg(nym_id_string);
+            str_insert_nym = QString("UPDATE `nym` SET `contact_id`=%1 WHERE `nym_id`='%2'").arg(nContactID).arg(nym_id_string);
 
         if (!str_insert_nym.isEmpty())
         {
@@ -725,6 +2316,86 @@ int MTContactHandler::CreateContactBasedOnNym(QString nym_id_string, QString not
     // ---------------------------------------------------------------------
     return nContactID;
 }
+
+
+
+
+
+int MTContactHandler::CreateContactBasedOnAddress(QString qstrAddress, QString qstrMethodType)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString qstrEncodedAddress = Encode(qstrAddress);
+    QString qstrEncodedMethodType = Encode(qstrMethodType);
+
+    // First, see if a contact already exists for this Address, and if so,
+    // save its ID and return at the bottom.
+    //
+    // If no contact exists for this Address, then create the contact and Address.
+    // (And save the contact ID, and return at the bottom.)
+    //
+    // -----------------------------------------------------------------------
+    int nContactID = 0;
+
+    // First, see if a contact already exists for this Address, and if so,
+    // save its ID and return at the bottom.
+    //
+    QString str_select = QString("SELECT `contact_id` FROM `contact_method` WHERE `address`='%1'").arg(qstrEncodedAddress);
+
+    int  nRows      = DBHandler::getInstance()->querySize(str_select);
+    bool bAddressExists = false;
+
+    for(int ii=0; ii < nRows; ii++)
+    {
+        nContactID = DBHandler::getInstance()->queryInt(str_select, 0, ii);
+
+        bAddressExists = true; // Whether the contact ID was good or not, the Address itself DOES exist.
+
+        break; // In practice there should only be one row.
+    }
+    // ---------------------------------------------------------------------
+    // If no contact exists for this Address, then create the contact and Address.
+    // (And save the contact ID, and return at the bottom.)
+    //
+    bool bHadToCreateContact = false;
+    if (!(nContactID > 0))
+    {
+        bHadToCreateContact = true;
+        QString str_insert_contact = QString("INSERT INTO `contact` "
+                                             "(`contact_id`) "
+                                             "VALUES(NULL)");
+
+        qDebug() << QString("Running query: %1").arg(str_insert_contact);
+
+        DBHandler::getInstance()->runQuery(str_insert_contact);
+        // ----------------------------------------
+        nContactID = DBHandler::getInstance()->queryInt("SELECT last_insert_rowid() from `contact`", 0, 0);
+    }
+    // ---------------------------------------------------------------------
+    // Here we create or update the Address...
+    //
+    if (nContactID > 0)
+    {
+        QString str_insert_addr;
+
+        if (!bAddressExists)
+            str_insert_addr = QString("INSERT INTO `contact_method` "
+                                     "(`contact_id`, `method_type`, `address`) "
+                                     "VALUES(%1, '%2', '%3')").arg(nContactID).arg(qstrEncodedMethodType).arg(qstrEncodedAddress);
+        else
+            str_insert_addr = QString("UPDATE contact_method SET contact_id=%1 WHERE address='%2'").arg(nContactID).arg(qstrEncodedAddress);
+
+        if (!str_insert_addr.isEmpty())
+        {
+            DBHandler::getInstance()->runQuery(str_insert_addr);
+        }
+    }
+    // ---------------------------------------------------------------------
+    return nContactID;
+}
+
+
+
 
 /*
 int MTContactHandler::FindOrCreateContactByNym(QString nym_id_string)
@@ -1882,7 +3553,7 @@ int MTContactHandler::GetContactByAddress(QString qstrAddress)
     return 0;
 }
 
-bool MTContactHandler::GetMsgMethodTypesByContact(mapIDName & theMap, int nFilterByContact, bool bAddServers/*=false*/, QString filterByType/*=""*/)
+bool MTContactHandler::GetMsgMethodTypesByContact(mapIDName & theMap, int nFilterByContact, bool bAddServers/*=false*/, QString filterByType/*=""*/, bool bIncludeTypeInKey/*=true*/)
 {
 // = "CREATE TABLE contact_method(contact_id INTEGER, method_type TEXT, address TEXT, PRIMARY KEY(contact_id, method_id, address))";
 
@@ -1924,7 +3595,7 @@ bool MTContactHandler::GetMsgMethodTypesByContact(mapIDName & theMap, int nFilte
             QString qstrID;
             QString qstrName = QString("%1: %2").arg(qstrTypeDisplay).arg(qstrAddress);
 
-            if (!filterByType.isEmpty())
+            if (!bIncludeTypeInKey || !filterByType.isEmpty())
                 qstrID   = QString("%1").arg(qstrAddress); // Address only. No need to put the type if we already filtered based on type.
             else
                 qstrID   = QString("%1|%2").arg(qstrType).arg(qstrAddress); // Here we put the type and address. Caller can split the string.
@@ -1945,9 +3616,9 @@ bool MTContactHandler::GetMsgMethodTypesByContact(mapIDName & theMap, int nFilte
 
 // --------------------------------------------
 
-bool MTContactHandler::GetAddressesByContact(mapIDName & theMap, int nFilterByContact, QString filterByType)
+bool MTContactHandler::GetAddressesByContact(mapIDName & theMap, int nFilterByContact, QString filterByType, bool bIncludeTypeInKey/*=true*/)
 {
-    return this->GetMsgMethodTypesByContact(theMap, nFilterByContact, false, filterByType);
+    return this->GetMsgMethodTypesByContact(theMap, nFilterByContact, false, filterByType, bIncludeTypeInKey);
 }
 
 // --------------------------------------------
@@ -2024,6 +3695,61 @@ void MTContactHandler::NotifyOfNymServerPair(QString nym_id_string, QString nota
     }
 }
 
+void MTContactHandler::NotifyOfNymServerUnpair(QString nym_id_string, QString notary_id_string)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_select_server = QString("SELECT `notary_id` FROM `nym_server` WHERE `nym_id`='%1' AND `notary_id`='%2' LIMIT 0,1").
+            arg(nym_id_string).arg(notary_id_string);
+    const int nRowsServer = DBHandler::getInstance()->querySize(str_select_server);
+
+    if (nRowsServer > 0) // It's already there. (Remove it.)
+    {
+        QString str_insert_server = QString("DELETE FROM `nym_server` WHERE `nym_id`='%1' AND `notary_id`='%2'").
+                arg(nym_id_string).arg(notary_id_string);
+        DBHandler::getInstance()->runQuery(str_insert_server);
+    }
+}
+
+void MTContactHandler::NotifyOfNymNamePair(QString nym_id_string, QString name_string)
+{
+    QMutexLocker locker(&m_Mutex);
+
+    QString str_select = QString("SELECT `nym_id` FROM `nym` WHERE `nym_id`='%1' LIMIT 0,1").arg(nym_id_string);
+    const int nRows = DBHandler::getInstance()->querySize(str_select);
+
+    QString queryStr;
+
+    if (0 == nRows) // It wasn't already there. (Add it.)
+    {
+        queryStr = QString("INSERT INTO `nym` "
+                           "(`nym_id`, `nym_display_name`, `contact_id`) "
+                           "VALUES(:nym_idBlah, :nym_display_nameBlah, 0)");
+    }
+    else
+    {
+        queryStr = QString("UPDATE `nym` SET `nym_display_name`=:nym_display_nameBlah WHERE `nym_id`=:nym_idBlah");
+    }
+
+    try
+    {
+    #ifdef CXX_11
+        std::unique_ptr<DBHandler::PreparedQuery> qu;
+    #else /* CXX_11?  */
+        std::auto_ptr<DBHandler::PreparedQuery> qu;
+    #endif /* CXX_11?  */
+        qu.reset (DBHandler::getInstance ()->prepareQuery (queryStr));
+        // ---------------------------------------------
+        qu->bind (":nym_idBlah", nym_id_string);
+        qu->bind (":nym_display_nameBlah", name_string);
+
+        DBHandler::getInstance ()->runQuery (qu.release ());
+    }
+    catch (const std::exception& exc)
+    {
+        qDebug () << "Error: " << exc.what ();
+    }
+}
 
 // NOTE: if an account isn't ALREADY found in my contact list, I am
 // very unlikely to find it in my wallet (since it's still most likely

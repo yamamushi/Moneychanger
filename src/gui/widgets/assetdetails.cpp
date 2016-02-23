@@ -134,7 +134,7 @@ void MTAssetDetails::on_pushButton_clicked()
                         // -----------------------------------------------
                         if (!OT_id.isEmpty())
                         {
-                            if (!qstr_current_id.isEmpty() && (OT_id == qstr_current_id))
+                            if (!qstr_current_id.isEmpty() && (0 == OT_id.compare(qstr_current_id)))
                                 bFoundDefault = true;
                             // -----------------------------------------------
                             OT_name = QString::fromStdString(opentxs::OTAPI_Wrap::It()->GetServer_Name(OT_id.toStdString()));
@@ -185,6 +185,7 @@ void MTAssetDetails::on_pushButton_clicked()
                                 case (1):
                                     {
                                         bIsRegiseredAtServer = true;
+                                        MTContactHandler::getInstance()->NotifyOfNymServerPair(qstrNymID, qstrNotaryID);
                                         break; // SUCCESS
                                     }
                                 case (0):
@@ -475,10 +476,8 @@ void MTAssetDetails::DeleteButtonClicked()
 
         if (!bCanRemove)
         {
-            QMessageBox::warning(this, tr("Asset Contract Cannot Be Removed"),
-                                 tr("This Asset Contract cannot be removed, since you probably have already created accounts "
-                                         "using this asset type. (This is where, in the future, you would be given the option "
-                                         "to automatically delete those accounts, and remove this asset contract along with them.)"));
+            QMessageBox::warning(this, tr("Moneychanger"),
+                                 tr("This asset contract cannot be removed, because there are still accounts in the wallet that are using it. Please delete those accounts first."));
             return;
         }
         // ----------------------------------------------------
@@ -494,7 +493,7 @@ void MTAssetDetails::DeleteButtonClicked()
             {
                 m_pOwner->m_map.remove(m_pOwner->m_qstrCurrentID);
                 // ------------------------------------------------
-                emit RefreshRecordsAndUpdateMenu();
+                emit assetsChanged();
                 // ------------------------------------------------
             }
             else
@@ -812,7 +811,7 @@ void MTAssetDetails::on_lineEditName_editingFinished()
 
             m_pOwner->SetPreSelected(m_pOwner->m_qstrCurrentID);
             // ------------------------------------------------
-            emit RefreshRecordsAndUpdateMenu();
+            emit assetsChanged();
             // ------------------------------------------------
         }
     }

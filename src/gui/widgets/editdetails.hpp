@@ -61,6 +61,7 @@ public:
     //
     virtual int       GetCustomTabCount();
     virtual QWidget * CreateCustomTab (int nTab);
+            QWidget * GetTab(int nTab);
     virtual QString   GetCustomTabName(int nTab);
     // ----------------------------------
     void SetEditType(MTDetailEdit::DetailEditType theType) { m_Type = theType; }
@@ -82,6 +83,11 @@ signals:
     void newAssetAdded(QString qstrID);
     void newNymAdded(QString qstrID);
     void newAccountAdded(QString qstrID);
+    // OR:
+    void serversChanged();
+    void assetsChanged();
+    void nymsChanged();
+    void accountsChanged();
 
     void runSmartContract(QString qstrTemplate, QString qstrLawyer, int32_t index);
 

@@ -22,39 +22,38 @@
 
 #include <QGridLayout>
 #include <QMessageBox>
+#include <QClipboard>
 #include <QLabel>
 #include <QDebug>
 #include <QDateTime>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QIcon>
 
 
 void MTHomeDetail::SetHomePointer(MTHome & theHome)
 {
     m_pHome = &theHome;
 
-    connect(this, SIGNAL(accountDataDownloaded()), m_pHome, SLOT(onAccountDataDownloaded()));
+    connect(this, SIGNAL(accountDataDownloaded()), Moneychanger::It(), SLOT(onNeedToPopulateRecordlist()));
 //  connect(this, SIGNAL(balanceChanged()),        m_pHome, SLOT(onBalancesChanged()));
     connect(this, SIGNAL(setRefreshBtnRed()),      m_pHome, SLOT(onSetRefreshBtnRed()));
     connect(this, SIGNAL(refreshUserBar()),        m_pHome, SLOT(onNeedToRefreshUserBar()));
-    connect(this, SIGNAL(recordDeleted(bool)),     m_pHome, SLOT(onRecordDeleted(bool)));
+    connect(this, SIGNAL(recordDeleted()),         m_pHome, SLOT(onRecordDeleted()));
     // --------------------------------------------------------
     connect(this, SIGNAL(showContact(QString)),               Moneychanger::It(), SLOT(mc_showcontact_slot(QString)));
     // --------------------------------------------------------
-    connect(this, SIGNAL(showContactAndRefreshHome(QString)), m_pHome,            SLOT(onNeedToRefreshRecords()));
+    connect(this, SIGNAL(showContactAndRefreshHome(QString)), Moneychanger::It(), SLOT(onNeedToPopulateRecordlist()));
     connect(this, SIGNAL(showContactAndRefreshHome(QString)), Moneychanger::It(), SLOT(mc_showcontact_slot(QString)));
     // --------------------------------------------------------
     connect(this, SIGNAL(balanceChanged()),                   Moneychanger::It(), SLOT(onBalancesChanged()));
-    connect(this, SIGNAL(balanceChanged()),                   m_pHome,            SLOT(onAccountDataDownloaded()));
+    connect(this, SIGNAL(balanceChanged()),                   Moneychanger::It(), SLOT(onNeedToPopulateRecordlist()));
     // --------------------------------------------------------
-    connect(this, SIGNAL(recordDeletedBalanceChanged(bool)),  Moneychanger::It(), SLOT(onBalancesChanged()));
-    connect(this, SIGNAL(recordDeletedBalanceChanged(bool)),  m_pHome,            SLOT(onRecordDeleted(bool))); // bRefreshUserBar
-    // NOTE: ALWAYS pass false to recordDeletedBalanceChanged, since Moneychanger::onBalancesChanged refreshes
-    // it anyway, so we don't want MTHome::recordDeleted() to unnecessarily refresh it a second time.
+    connect(this, SIGNAL(recordDeletedBalanceChanged()),  Moneychanger::It(), SLOT(onBalancesChanged()));
+    connect(this, SIGNAL(recordDeletedBalanceChanged()),  m_pHome,            SLOT(onRecordDeleted()));
     // --------------------------------------------------------
     connect(m_pHome, SIGNAL(needToRefreshDetails(int, opentxs::OTRecordList&)), this, SLOT(onRefresh(int, opentxs::OTRecordList&)));
 }
-
 
 MTHomeDetail::MTHomeDetail(QWidget *parent) :
     QWidget(parent),
@@ -156,17 +155,15 @@ void MTHomeDetail::on_addContactButton_clicked(bool checked /*=false*/)
                 QString InstrumentDefinitionID   = QString::fromStdString(str_asset_id);
                 QString accountID = QString::fromStdString(str_acct_id);
                 // --------------------------------------------------
-                nContactID = MTContactHandler::getInstance()->CreateContactBasedOnNym(nymID, NotaryID);
-                // --------------------------------------------------
-                if (!str_acct_id.empty())
-                {
-                    int nAcctContactID = MTContactHandler::getInstance()->FindContactIDByAcctID(accountID, nymID, NotaryID, InstrumentDefinitionID);
+                int nAcctContactID = 0;
 
-                    if (!(nContactID > 0))
-                        nContactID = nAcctContactID;
-                }
-                else if (!str_notary_id.empty())
-                    MTContactHandler::getInstance()->NotifyOfNymServerPair(nymID, NotaryID);
+                if (!str_acct_id.empty())
+                    nAcctContactID = MTContactHandler::getInstance()->FindContactIDByAcctID(accountID, nymID, NotaryID, InstrumentDefinitionID);
+                // --------------------------------------------------
+                if (nAcctContactID > 0)
+                    nContactID = nAcctContactID;
+                else
+                    nContactID = MTContactHandler::getInstance()->CreateContactBasedOnNym(nymID, NotaryID);
                 // --------------------------------------------------
                 if (nContactID > 0)
                 {
@@ -224,10 +221,17 @@ void MTHomeDetail::on_existingContactButton_clicked(bool checked /*=false*/)
         QString InstrumentDefinitionID   = QString::fromStdString(str_asset_id);
         QString accountID = QString::fromStdString(str_acct_id);
 
-        if (MTContactHandler::getInstance()->ContactExists(nymID.toInt()))
+        if (MTContactHandler::getInstance()->FindContactIDByNymID(nymID) > 0)
         {
-            QMessageBox::warning(this, tr("Strange"),
+            QMessageBox::warning(this, tr("Moneychanger"),
                                  tr("Strange: NymID %1 already belongs to an existing contact.").arg(nymID));
+            return;
+        }
+
+        if (MTContactHandler::getInstance()->FindContactIDByAcctID(accountID, nymID, NotaryID, InstrumentDefinitionID) > 0)
+        {
+            QMessageBox::warning(this, tr("Moneychanger"),
+                                 tr("Strange: accountID %1 already belongs to an existing contact.").arg(accountID));
             return;
         }
         // --------------------------------------------------------------------
@@ -245,7 +249,7 @@ void MTHomeDetail::on_existingContactButton_clicked(bool checked /*=false*/)
         {
             QString strContactID = theChooser.GetCurrentID();
 
-            qDebug() << QString("SELECT was clicked for ID: %1").arg(strContactID);
+//            qDebug() << QString("SELECT was clicked for ID: %1").arg(strContactID);
 
             int nContactID = strContactID.isEmpty() ? 0 : strContactID.toInt();
 
@@ -286,7 +290,7 @@ void MTHomeDetail::on_existingContactButton_clicked(bool checked /*=false*/)
         }
         else
         {
-          qDebug() << "CANCEL was clicked";
+//          qDebug() << "CANCEL was clicked";
         }
     }
 }
@@ -358,7 +362,7 @@ void MTHomeDetail::on_deleteButton_clicked(bool checked /*=false*/)
 
         if (bSuccess)
         {
-            emit recordDeleted(false); // bRefreshUserBar
+            emit recordDeleted();
         }
     }
 }
@@ -421,10 +425,17 @@ QString MTHomeDetail::FindAppropriateDepositAccount(opentxs::OTRecord& recordmt)
         qstr_acct_server = QString::fromStdString(str_acct_server);
         qstr_acct_asset  = QString::fromStdString(str_acct_asset);
         // -----------------------------------
+
+
+        qDebug() << "\n DEBUGGING qstr_acct_nym: " << qstr_acct_nym;
+        qDebug() << "\n DEBUGGING str_acct_type: " << QString::fromStdString(str_acct_type);
+
+
+
         if ((qstr_record_nym    != qstr_acct_nym)    ||
             (qstr_record_server != qstr_acct_server) ||
             (qstr_record_asset  != qstr_acct_asset)  ||
-            (0 != str_acct_type.compare("simple"))    ) // DO NOT INTERNATIONALIZE "simple".
+            (0 != str_acct_type.compare("user"))    ) // DO NOT INTERNATIONALIZE "user".
         {
             // There's a default account, but it's got the wrong Asset type, or the
             // wrong server, etc, for it to accept this record. Therefore we have to
@@ -479,10 +490,15 @@ QString MTHomeDetail::FindAppropriateDepositAccount(opentxs::OTRecord& recordmt)
                 qstr_acct_server = QString::fromStdString(str_acct_server);
                 qstr_acct_asset  = QString::fromStdString(str_acct_asset);
                 // -----------------------------------------------
-                if ((qstr_record_nym    == qstr_acct_nym   ) &&
-                    (qstr_record_server == qstr_acct_server) &&
-                    (qstr_record_asset  == qstr_acct_asset ) &&
-                    (0 == str_acct_type.compare("simple")  )  ) // DO NOT INTERNATIONALIZE "simple".
+
+
+                qDebug() << "\n DEBUGGING loop qstr_acct_nym: " << qstr_acct_nym;
+                qDebug() << "\n DEBUGGING loop str_acct_type: " << QString::fromStdString(str_acct_type);
+
+                if ((0 == qstr_record_nym   .compare(qstr_acct_nym)   ) &&
+                    (0 == qstr_record_server.compare(qstr_acct_server)) &&
+                    (0 == qstr_record_asset .compare(qstr_acct_asset) ) &&
+                    (0 == str_acct_type.compare("user")  )  ) // DO NOT INTERNATIONALIZE "user".
                 {
                     MTNameLookupQT theLookup;
 
@@ -536,7 +552,7 @@ QString MTHomeDetail::FindAppropriateDepositAccount(opentxs::OTRecord& recordmt)
             // -----------------------------------------------
             if (theChooser.exec() == QDialog::Accepted)
             {
-                qDebug() << QString("SELECT was clicked for AcctID: %1").arg(theChooser.m_qstrCurrentID);
+//              qDebug() << QString("SELECT was clicked for AcctID: %1").arg(theChooser.m_qstrCurrentID);
 
                 if (!theChooser.m_qstrCurrentID.isEmpty())
                     qstr_acct_id = theChooser.m_qstrCurrentID;
@@ -627,6 +643,12 @@ void MTHomeDetail::on_acceptButton_clicked(bool checked /*=false*/)
                 {
                     MTSpinner theSpinner;
                     // -----------------------------------------
+
+
+                    // TODO resume
+                    // if it's a payment plan or smart contract, need to display certain details for the user
+                    // Then the user can be double-sure before accepting the terms.
+
                     bSuccess = recordmt.AcceptIncomingInstrument(qstr_acct_id.toStdString());
                 }
                 // -----------------------------------------
@@ -662,7 +684,7 @@ void MTHomeDetail::on_cancelButton_clicked(bool checked /*=false*/)
             QMessageBox::StandardButton reply;
 
             reply = QMessageBox::question(this, "",
-                                          tr("This will prevent the original recipient from depositing the cash. "
+                                          tr("This will prevent the other party from depositing the cash. "
                                           "(And FYI, this action will fail, if he has already deposited it.) "
                                           "Are you sure you want to recover this cash?"),
                                           QMessageBox::Yes|QMessageBox::No);
@@ -709,7 +731,7 @@ void MTHomeDetail::on_cancelButton_clicked(bool checked /*=false*/)
                 {
                     // Refresh the main list, or at least change the color of the refresh button.
                     //
-                    emit recordDeletedBalanceChanged(false); // Passing true would unnecessarily refresh the user bar twice.
+                    emit recordDeletedBalanceChanged();
                 }
             } // qstr_acct_id not empty.
         } // record is cash
@@ -719,7 +741,7 @@ void MTHomeDetail::on_cancelButton_clicked(bool checked /*=false*/)
             QMessageBox::StandardButton reply;
 
             reply = QMessageBox::question(this, "",
-                                          tr("This will prevent the original recipient from exercising this instrument. "
+                                          tr("This will prevent the other party from exercising this instrument. "
                                           "(And FYI, this action will fail if he's already done so.) "
                                           "Are you sure you want to cancel?"),
                                           QMessageBox::Yes|QMessageBox::No);
@@ -785,7 +807,7 @@ void MTHomeDetail::on_discardOutgoingButton_clicked(bool checked /*=false*/)
         }
         else
         {
-            emit recordDeletedBalanceChanged(false);
+            emit recordDeletedBalanceChanged();
         }
         // ----------------------------------
     }
@@ -827,11 +849,75 @@ void MTHomeDetail::on_discardIncomingButton_clicked(bool checked /*=false*/)
         }
         else
         {
-            emit recordDeletedBalanceChanged(false);
+            emit recordDeletedBalanceChanged();
         }
         // ----------------------------------
     }
 }
+
+
+
+void MTHomeDetail::copyIDToClipboard(const QString qstr_field, const QString & text)
+{
+    QClipboard *clipboard = QApplication::clipboard();
+
+    if (NULL != clipboard)
+    {
+        clipboard->setText(text);
+
+        QMessageBox::information(this, tr("Moneychanger"), QString("%1 %2 %3:<br/>%4").
+                                 arg(tr("Copied")).arg(qstr_field).arg(tr("to the clipboard")).
+                                 arg(text));
+    }
+}
+
+
+void MTHomeDetail::copyNymClicked()
+{
+    copyIDToClipboard(tr("Nym ID"), m_pLineEdit_Nym_ID->text());
+}
+
+void MTHomeDetail::copyOtherNymClicked()
+{
+    copyIDToClipboard(tr("Other Nym ID"), m_pLineEdit_OtherNym_ID->text());
+}
+
+
+void MTHomeDetail::copyAddressClicked()
+{
+    copyIDToClipboard(tr("Address"), m_pLineEdit_Address->text());
+}
+
+
+void MTHomeDetail::copyOtherAddressClicked()
+{
+    copyIDToClipboard(tr("Other Address"), m_pLineEdit_OtherAddress->text());
+}
+
+
+void MTHomeDetail::copyAcctClicked()
+{
+    copyIDToClipboard(tr("Account ID"), m_pLineEdit_Acct_ID->text());
+}
+
+
+void MTHomeDetail::copyOtherAcctClicked()
+{
+    copyIDToClipboard(tr("Other Account ID"), m_pLineEdit_OtherAcct_ID->text());
+}
+
+
+void MTHomeDetail::copyServerClicked()
+{
+    copyIDToClipboard(tr("Notary ID"), m_pLineEdit_notary_id->text());
+}
+
+
+void MTHomeDetail::copyAssetTypeClicked()
+{
+    copyIDToClipboard(tr("Asset Type ID"), m_pLineEdit_AssetType_ID->text());
+}
+
 
 
 
@@ -928,7 +1014,9 @@ void MTHomeDetail::on_msgButton_clicked(bool checked /*=false*/)
         compose_window->setInitialSubject(QString::fromStdString(str_desc));
         // --------------------------------------------------
         compose_window->dialog();
-        compose_window->show();
+        Focuser f(compose_window);
+        f.show();
+        f.focus();
         // --------------------------------------------------
     }
 }
@@ -949,7 +1037,7 @@ QWidget * MTHomeDetail::CreateDetailHeaderWidget(opentxs::OTRecord& recordmt, bo
     // --------------------------------------------------------------------------------------------
     // For invoices and invoice receipts.
     //
-    if (recordmt.IsInvoice() || recordmt.IsPaymentPlan() ||
+    if (recordmt.IsInvoice() || recordmt.IsPaymentPlan() || recordmt.IsNotice() ||
         ((0 == recordmt.GetInstrumentType().compare("chequeReceipt")) &&
          (( recordmt.IsOutgoing() && (opentxs::OTAPI_Wrap::It()->StringToLong(recordmt.GetAmount()) > 0)) ||
           (!recordmt.IsOutgoing() && (opentxs::OTAPI_Wrap::It()->StringToLong(recordmt.GetAmount()) < 0)))
@@ -1247,6 +1335,16 @@ void MTHomeDetail::RecreateLayout()
     m_pLineEdit_OtherAcct_Name = NULL;
     m_pLineEdit_Server_Name = NULL;
     m_pLineEdit_AssetType_Name = NULL;
+
+    m_pToolbutton_Nym_Name = NULL;
+    m_pToolbutton_OtherNym_Name = NULL;
+    m_pToolbutton_Address_Name = NULL;
+    m_pToolbutton_OtherAddress_Name = NULL;
+    m_pToolbutton_Acct_Name = NULL;
+    m_pToolbutton_OtherAcct_Name = NULL;
+    m_pToolbutton_Server_Name = NULL;
+    m_pToolbutton_AssetType_Name = NULL;
+
     // --------------------------------------------------
     this->blockSignals(false);
 }
@@ -1349,7 +1447,10 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
     {
         m_nContactID = nContactID;
         // --------------------------------------------------
-        QPushButton * viewContactButton = new QPushButton(viewDetails);
+        QPixmap pixmapAction(":/icons/icons/rolodex_small.png");
+        QIcon actionButtonIcon(pixmapAction);
+
+        QPushButton * viewContactButton = new QPushButton(actionButtonIcon, viewDetails);
 
         m_pDetailLayout->addWidget(viewContactButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(viewContactButton, Qt::AlignTop);
@@ -1360,7 +1461,10 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
     }
     else if (!str_nym_id.empty())
     {
-        QPushButton * addContactButton = new QPushButton(tr("Add as Contact"));
+        QPixmap pixmapAction(":/icons/icons/rolodex_small.png");
+        QIcon actionButtonIcon(pixmapAction);
+
+        QPushButton * addContactButton = new QPushButton(actionButtonIcon, tr("Add as Contact"));
 
         m_pDetailLayout->addWidget(addContactButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(addContactButton, Qt::AlignTop);
@@ -1372,7 +1476,10 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
         // If the contact didn't already exist, we don't just have "add new contact"
         // but also "add to existing contact."
         //
-        QPushButton * existingContactButton = new QPushButton(tr("Add to an Existing Contact"));
+        QPixmap pixmapAction1(":/icons/icons/rolodex_small.png");
+        QIcon actionButtonIcon1(pixmapAction1);
+
+        QPushButton * existingContactButton = new QPushButton(actionButtonIcon1, tr("Add to an Existing Contact"));
 
         m_pDetailLayout->addWidget(existingContactButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(existingContactButton, Qt::AlignTop);
@@ -1384,8 +1491,11 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
     // *************************************************************
     if (recordmt.CanDeleteRecord())
     {
+        QPixmap pixmapAction(":/icons/icons/DeleteRed.png");
+        QIcon actionButtonIcon(pixmapAction);
+
         QString deleteActionName = recordmt.IsMail() ? tr("Delete this Message") : tr("Delete this Record");
-        QPushButton * deleteButton = new QPushButton(deleteActionName);
+        QPushButton * deleteButton = new QPushButton(actionButtonIcon, deleteActionName);
 
         m_pDetailLayout->addWidget(deleteButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(deleteButton, Qt::AlignTop);
@@ -1395,7 +1505,6 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
         connect(deleteButton, SIGNAL(clicked()), this, SLOT(on_deleteButton_clicked()));
     }
     // --------------------------------------------------
-
     if (recordmt.CanAcceptIncoming())
     {
 //      const bool bIsTransfer = (recordmt.GetRecordType() == opentxs::OTRecord::Transfer);
@@ -1450,7 +1559,10 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
             actionString = tr("Depositing...");
         }
 
-        QPushButton * acceptButton = new QPushButton(nameString);
+        QPixmap pixmapAction(":/icons/icons/signature-small.png");
+        QIcon actionButtonIcon(pixmapAction);
+        // ----------------------------------------------------------------
+        QPushButton * acceptButton = new QPushButton(actionButtonIcon, nameString);
 
         m_pDetailLayout->addWidget(acceptButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(acceptButton, Qt::AlignTop);
@@ -1458,7 +1570,6 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
         increment_cell(nCurrentRow, nCurrentColumn);
 
         connect(acceptButton, SIGNAL(clicked()), this, SLOT(on_acceptButton_clicked()));
-
     }
 
     if (recordmt.CanCancelOutgoing())
@@ -1490,7 +1601,10 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
             cancelString = tr("Cancel this Payment");
 
 
-        QPushButton * cancelButton = new QPushButton(cancelString);
+        QPixmap pixmapAction(":/icons/icons/DeleteRed.png");
+        QIcon actionButtonIcon(pixmapAction);
+
+        QPushButton * cancelButton = new QPushButton(actionButtonIcon, cancelString);
 
         m_pDetailLayout->addWidget(cancelButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(cancelButton, Qt::AlignTop);
@@ -1498,14 +1612,16 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
         increment_cell(nCurrentRow, nCurrentColumn);
 
         connect(cancelButton, SIGNAL(clicked()), this, SLOT(on_cancelButton_clicked()));
-
     }
 
     if (recordmt.CanDiscardOutgoingCash())
     {
         QString discardString = tr("Discard this Sent Cash");
 
-        QPushButton * discardOutgoingButton = new QPushButton(discardString);
+        QPixmap pixmapAction(":/icons/icons/DeleteRed.png");
+        QIcon actionButtonIcon(pixmapAction);
+
+        QPushButton * discardOutgoingButton = new QPushButton(actionButtonIcon, discardString);
 
         m_pDetailLayout->addWidget(discardOutgoingButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(discardOutgoingButton, Qt::AlignTop);
@@ -1513,8 +1629,6 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
         increment_cell(nCurrentRow, nCurrentColumn);
 
         connect(discardOutgoingButton, SIGNAL(clicked()), this, SLOT(on_discardOutgoingButton_clicked()));
-
-
     }
 
     if (recordmt.CanDiscardIncoming())
@@ -1536,8 +1650,10 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
         else
             discardString = tr("Discard this Payment");
 
+        QPixmap pixmapAction(":/icons/icons/DeleteRed.png");
+        QIcon actionButtonIcon(pixmapAction);
 
-        QPushButton * discardIncomingButton = new QPushButton(discardString);
+        QPushButton * discardIncomingButton = new QPushButton(actionButtonIcon, discardString);
 
         m_pDetailLayout->addWidget(discardIncomingButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(discardIncomingButton, Qt::AlignTop);
@@ -1545,7 +1661,6 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
         increment_cell(nCurrentRow, nCurrentColumn);
 
         connect(discardIncomingButton, SIGNAL(clicked()), this, SLOT(on_discardIncomingButton_clicked()));
-
     }
 
     if (!recordmt.GetOtherNymID().empty() || !recordmt.GetOtherAddress().empty())
@@ -1557,7 +1672,10 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
         else
             msgUser = tr("Message the Sender");
 
-        QPushButton * msgButton = new QPushButton(((recordmt.IsMail() && !recordmt.IsOutgoing()) ? tr("Reply to this Message") : msgUser));
+        QPixmap pixmapAction(":/icons/icons/reply.png");
+        QIcon actionButtonIcon(pixmapAction);
+
+        QPushButton * msgButton = new QPushButton(actionButtonIcon, ((recordmt.IsMail() && !recordmt.IsOutgoing()) ? tr("Reply to this Message") : msgUser));
 
         m_pDetailLayout->addWidget(msgButton, nCurrentRow, nCurrentColumn,1,1);
         m_pDetailLayout->setAlignment(msgButton, Qt::AlignTop);
@@ -1611,7 +1729,7 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
     {
         pIDHeader->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
 
-        pGridLayout->addWidget(pIDHeader, nGridRow++, 0, 1, 3);
+        pGridLayout->addWidget(pIDHeader, nGridRow++, 0, 1, 4);
         pGridLayout->setAlignment(pIDHeader, Qt::AlignTop);
     }
     // --------------------------------------------------
@@ -1634,7 +1752,14 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
 
         pGridLayout->addWidget(pLabel, nGridRow,   0);
         pGridLayout->addWidget(m_pLineEdit_Nym_Name, nGridRow,   1);
-        pGridLayout->addWidget(m_pLineEdit_Nym_ID, nGridRow++, 2);
+        pGridLayout->addWidget(m_pLineEdit_Nym_ID, nGridRow, 2);
+
+        m_pToolbutton_Nym_Name = new QToolButton;
+        m_pToolbutton_Nym_Name->setIcon(QIcon(":/icons/icons/Basic-Copy-icon.png"));
+
+        pGridLayout->addWidget(m_pToolbutton_Nym_Name, nGridRow++, 3);
+
+        connect(m_pToolbutton_Nym_Name, SIGNAL(clicked()), this, SLOT(copyNymClicked()) );
     }
 
     if (!qstr_OtherNymID.isEmpty())
@@ -1655,7 +1780,15 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
 
         pGridLayout->addWidget(pLabel,    nGridRow,   0);
         pGridLayout->addWidget(m_pLineEdit_OtherNym_Name,    nGridRow,   1);
-        pGridLayout->addWidget(m_pLineEdit_OtherNym_ID, nGridRow++, 2);
+        pGridLayout->addWidget(m_pLineEdit_OtherNym_ID, nGridRow, 2);
+
+
+        m_pToolbutton_OtherNym_Name = new QToolButton;
+        m_pToolbutton_OtherNym_Name->setIcon(QIcon(":/icons/icons/Basic-Copy-icon.png"));
+
+        pGridLayout->addWidget(m_pToolbutton_OtherNym_Name, nGridRow++, 3);
+
+        connect(m_pToolbutton_OtherNym_Name, SIGNAL(clicked()), this, SLOT(copyOtherNymClicked()) );
     }
     // --------------------------------------------------
 
@@ -1677,7 +1810,15 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
 
         pGridLayout->addWidget(pLabel, nGridRow,   0);
         pGridLayout->addWidget(m_pLineEdit_Address_Name, nGridRow,   1);
-        pGridLayout->addWidget(m_pLineEdit_Address, nGridRow++, 2);
+        pGridLayout->addWidget(m_pLineEdit_Address, nGridRow, 2);
+
+
+        m_pToolbutton_Address_Name = new QToolButton;
+        m_pToolbutton_Address_Name->setIcon(QIcon(":/icons/icons/Basic-Copy-icon.png"));
+
+        pGridLayout->addWidget(m_pToolbutton_Address_Name, nGridRow++, 3);
+
+        connect(m_pToolbutton_Address_Name, SIGNAL(clicked()), this, SLOT(copyAddressClicked()) );
     }
 
     if (!qstr_OtherAddress.isEmpty())
@@ -1698,7 +1839,15 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
 
         pGridLayout->addWidget(pLabel,    nGridRow,   0);
         pGridLayout->addWidget(m_pLineEdit_OtherAddress_Name, nGridRow,   1);
-        pGridLayout->addWidget(m_pLineEdit_OtherAddress,      nGridRow++, 2);
+        pGridLayout->addWidget(m_pLineEdit_OtherAddress,      nGridRow, 2);
+
+
+        m_pToolbutton_OtherAddress_Name = new QToolButton;
+        m_pToolbutton_OtherAddress_Name->setIcon(QIcon(":/icons/icons/Basic-Copy-icon.png"));
+
+        pGridLayout->addWidget(m_pToolbutton_OtherAddress_Name, nGridRow++, 3);
+
+        connect(m_pToolbutton_OtherAddress_Name, SIGNAL(clicked()), this, SLOT(copyOtherAddressClicked()) );
     }
 
     if (!qstr_AccountID.isEmpty())
@@ -1719,7 +1868,15 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
 
         pGridLayout->addWidget(pLabel,    nGridRow,   0);
         pGridLayout->addWidget(m_pLineEdit_Acct_Name,    nGridRow,   1);
-        pGridLayout->addWidget(m_pLineEdit_Acct_ID, nGridRow++, 2);
+        pGridLayout->addWidget(m_pLineEdit_Acct_ID, nGridRow, 2);
+
+
+        m_pToolbutton_Acct_Name = new QToolButton;
+        m_pToolbutton_Acct_Name->setIcon(QIcon(":/icons/icons/Basic-Copy-icon.png"));
+
+        pGridLayout->addWidget(m_pToolbutton_Acct_Name, nGridRow++, 3);
+
+        connect(m_pToolbutton_Acct_Name, SIGNAL(clicked()), this, SLOT(copyAcctClicked()) );
     }
 
     if (!qstr_OtherAcctID.isEmpty())
@@ -1740,7 +1897,15 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
 
         pGridLayout->addWidget(pLabel,    nGridRow,   0);
         pGridLayout->addWidget(m_pLineEdit_OtherAcct_Name,    nGridRow,   1);
-        pGridLayout->addWidget(m_pLineEdit_OtherAcct_ID, nGridRow++, 2);
+        pGridLayout->addWidget(m_pLineEdit_OtherAcct_ID, nGridRow, 2);
+
+
+        m_pToolbutton_OtherAcct_Name = new QToolButton;
+        m_pToolbutton_OtherAcct_Name->setIcon(QIcon(":/icons/icons/Basic-Copy-icon.png"));
+
+        pGridLayout->addWidget(m_pToolbutton_OtherAcct_Name, nGridRow++, 3);
+
+        connect(m_pToolbutton_OtherAcct_Name, SIGNAL(clicked()), this, SLOT(copyOtherAcctClicked()) );
     }
 
     if (!qstr_NotaryID.isEmpty())
@@ -1760,7 +1925,15 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
 
         pGridLayout->addWidget(pLabel,    nGridRow,   0);
         pGridLayout->addWidget(m_pLineEdit_Server_Name,    nGridRow,   1);
-        pGridLayout->addWidget(m_pLineEdit_notary_id, nGridRow++, 2);
+        pGridLayout->addWidget(m_pLineEdit_notary_id, nGridRow, 2);
+
+
+        m_pToolbutton_Server_Name = new QToolButton;
+        m_pToolbutton_Server_Name->setIcon(QIcon(":/icons/icons/Basic-Copy-icon.png"));
+
+        pGridLayout->addWidget(m_pToolbutton_Server_Name, nGridRow++, 3);
+
+        connect(m_pToolbutton_Server_Name, SIGNAL(clicked()), this, SLOT(copyServerClicked()) );
     }
 
     if (!qstr_AssetTypeID.isEmpty())
@@ -1780,7 +1953,15 @@ void MTHomeDetail::refresh(opentxs::OTRecord& recordmt)
 
         pGridLayout->addWidget(pLabel, nGridRow, 0);
         pGridLayout->addWidget(m_pLineEdit_AssetType_Name, nGridRow, 1);
-        pGridLayout->addWidget(m_pLineEdit_AssetType_ID, nGridRow++, 2);
+        pGridLayout->addWidget(m_pLineEdit_AssetType_ID, nGridRow, 2);
+
+
+        m_pToolbutton_AssetType_Name = new QToolButton;
+        m_pToolbutton_AssetType_Name->setIcon(QIcon(":/icons/icons/Basic-Copy-icon.png"));
+
+        pGridLayout->addWidget(m_pToolbutton_AssetType_Name, nGridRow++, 3);
+
+        connect(m_pToolbutton_AssetType_Name, SIGNAL(clicked()), this, SLOT(copyAssetTypeClicked()) );
     }
     // ----------------------------------
     FavorLeftSideForIDs();

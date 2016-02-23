@@ -8,6 +8,7 @@
 #include <core/moneychanger.hpp>
 #include <core/handlers/DBHandler.hpp>
 #include <core/handlers/contacthandler.hpp>
+#include <core/handlers/focuser.h>
 
 #include <gui/ui/dlgexportedtopass.hpp>
 
@@ -190,7 +191,9 @@ void DlgEncrypt::dialog()
     if (!already_init)
     {
         // ----------------------------
-        show();
+        Focuser f(this);
+        f.show();
+        f.focus();
         // ----------------------------
         if (m_bEncrypt)
         {
@@ -272,7 +275,7 @@ void DlgEncrypt::on_pushButtonEncrypt_clicked()
 
                     opentxs::Nym * pNym = opentxs::OTAPI_Wrap::OTAPI()->GetOrLoadPrivateNym(nym_id,
                                                                            false, //bChecking=false
-                                                                           "DlgEncrypt::on_pushButtonEncrypt_clicked",
+                                                                           __FUNCTION__,
                                                                            &thePWData);
                     if (NULL == pNym)
                     {
@@ -347,12 +350,12 @@ void DlgEncrypt::on_pushButtonEncrypt_clicked()
                 {
                     bRecipientsShouldBeAvailable = true;
 
-                    QListWidgetItem * pItem    = ui->listWidgetAdded->item(nIndex);
-                    QVariant          qvarItem = pItem->data(Qt::UserRole);
-                    QString           qstrNymID(qvarItem.toString());
-                    std::string       str_nym(qstrNymID.toStdString());
-                    opentxs::String          strNym(str_nym.c_str());
-                    opentxs::Identifier      nym_id(strNym);
+                    QListWidgetItem   * pItem    = ui->listWidgetAdded->item(nIndex);
+                    QVariant            qvarItem = pItem->data(Qt::UserRole);
+                    QString             qstrNymID(qvarItem.toString());
+                    std::string         str_nym(qstrNymID.toStdString());
+                    opentxs::String     strNym(str_nym.c_str());
+                    opentxs::Identifier nym_id(strNym);
 
                     if (!nym_id.IsEmpty())
                     {
@@ -360,7 +363,7 @@ void DlgEncrypt::on_pushButtonEncrypt_clicked()
 
                         opentxs::Nym * pNym = opentxs::OTAPI_Wrap::OTAPI()->GetOrLoadNym(nym_id,
                                                                                false, //bChecking=false
-                                                                               "DlgEncrypt::on_pushButtonEncrypt_clicked",
+                                                                               __FUNCTION__,
                                                                                &thePWData);
                         if (NULL == pNym)
                         {
@@ -411,7 +414,7 @@ void DlgEncrypt::on_pushButtonEncrypt_clicked()
 
                             opentxs::Nym * pNym = opentxs::OTAPI_Wrap::OTAPI()->GetOrLoadNym(signer_nym_id,
                                                                                    false, //bChecking=false
-                                                                                   "DlgEncrypt::on_pushButtonEncrypt_clicked",
+                                                                                   __FUNCTION__,
                                                                                    &thePWData);
                             if (NULL == pNym)
                             {

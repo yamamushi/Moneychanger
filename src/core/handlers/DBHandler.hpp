@@ -5,12 +5,19 @@
 #include "core/ExportWrapper.h"
 
 #include <core/handlers/FileHandler.hpp>
+#include <core/handlers/modeltradearchive.hpp>
+#include <core/handlers/modelmessages.hpp>
+#include <core/handlers/modelpayments.hpp>
+#include <core/handlers/modelagreements.hpp>
+#include <core/handlers/modelclaims.hpp>
 
 #include <QDebug>
 #include <QMutex>
 #include <QSqlDatabase>
+#include <QPointer>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSqlQueryModel>
 #include <QSqlRecord>
 #include <QString>
 #include <QVariant>
@@ -22,7 +29,7 @@
  * Note that the filename path assignment is going to need to be fixed.
  */
 static const QString dbDriverStr = "QSQLITE";
-static const QString dbFileNameStr = "/mc_db"; // Changed this from db/mc_db due to directory not existing.
+static const QString dbFileNameStr = "mc_db"; // Changed this from db/mc_db due to directory not existing.
 static const QString dbConnNameStr = "addressBook";
 
 static const int PBAR_MAX_STEPS =7;
@@ -51,6 +58,12 @@ class DBHandler
     FileHandler dbFile;
     QMutex dbMutex;
     
+    QPointer<ModelTradeArchive>         pTradeArchiveModel_;
+    QPointer<ModelMessages>             pMessageModel_;
+    QPointer<ModelPayments>             pPaymentModel_;
+    QPointer<ModelAgreements>           pAgreementModel_;
+    QPointer<ModelAgreementReceipts>    pAgreementReceiptModel_;
+
     bool dbConnect();
     bool isConnected();
     bool dbDisconnect();
@@ -60,6 +73,18 @@ class DBHandler
 
   public:
     static DBHandler * getInstance();
+
+    QPointer<ModelTradeArchive> getTradeArchiveModel();
+    QPointer<ModelMessages>     getMessageModel();
+    QPointer<ModelPayments>     getPaymentModel();
+    QPointer<ModelAgreements>     getAgreementModel();
+    QPointer<ModelAgreementReceipts>     getAgreementReceiptModel();
+    QPointer<ModelClaims>       getClaimsModel(int nContactId);
+    QPointer<ModelClaims>       getClaimsModel(const QString & qstrNymId);
+    QPointer<ModelClaims>       getRelationshipClaims(int nAboutContactId);
+    QPointer<ModelClaims>       getRelationshipClaims(const QString & qstrAboutNymId);
+
+    QString formatValue(QSqlField & sqlField);
 
     class PreparedQuery;
 
@@ -145,7 +170,7 @@ class DBHandler::PreparedQuery
     inline PreparedQuery (QSqlDatabase& db, const QString& run)
       : query(db), queryStr(run)
     {
-      query.prepare (run);
+      query.prepare (queryStr);
     }
 
     // Disable copying.
@@ -162,6 +187,8 @@ class DBHandler::PreparedQuery
     bool execute ();
 
   public:
+
+    QString lastQuery();
 
     // No copying.
 #ifdef CXX_11

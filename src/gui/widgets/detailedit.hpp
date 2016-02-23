@@ -4,12 +4,13 @@
 #include "core/WinsockWrapper.h"
 #include "core/ExportWrapper.h"
 
-#include <core/handlers/contacthandler.hpp>
 
 #include <QPointer>
 #include <QWidget>
 #include <QTabWidget>
 #include <QVBoxLayout>
+
+#include "core/mapidname.hpp"
 
 
 namespace Ui {
@@ -85,10 +86,14 @@ public:
     void RefreshLawyerCombo();
     void SetCurrentLawyerIDBasedOnIndex(int index);
     // --------------------------------
-    QMultiMap<QString, QVariant> * m_pmapMarkets; // do not delete. For reference only.
-    QMap     <QString, QVariant> * m_pmapOffers;  // do not delete. For reference only.
+    bool getAccountIDs(QString & qstrAssetAcctID, QString & qstrCurrencyAcctID); // For a market offer.
     // --------------------------------
-    int         m_nCurrentRow;
+    QWidget * GetTab(int nTab);
+    // --------------------------------
+    QMultiMap<QString, QVariant> * m_pmapMarkets=nullptr; // do not delete. For reference only.
+    QMap     <QString, QVariant> * m_pmapOffers=nullptr;  // do not delete. For reference only.
+    // --------------------------------
+    int         m_nCurrentRow = -1;
     QString     m_qstrCurrentID;
     QString     m_qstrCurrentName;
     mapIDName   m_map; // qstr/qstr for id/name
@@ -111,19 +116,15 @@ public:
 
 signals:
     void balancesChanged();
-
     void CurrentMarketChanged(QString qstrMarketID);
-
     void NeedToLoadOrRetrieveOffers(QString qstrMarketID);
 
 public slots:
     void onBalancesChangedFromAbove();
     void onBalancesChangedFromBelow(QString qstrAcctID);
-
     void onRefreshRecords();
-
+    void onExpertModeUpdated(bool bExpertMode);
     void onMarketIDChangedFromAbove(QString qstrMarketID);
-
     void onSetNeedToRetrieveOfferTradeFlags();
 
 protected:
@@ -131,8 +132,8 @@ protected:
     QString     m_qstrMarketNymID;    // used by marketdetails and offerdetails.
     QString     m_qstrMarketNotaryID; // used by marketdetails and offerdetails.
     // ----------------------------------
-    bool        m_bEnableAdd;
-    bool        m_bEnableDelete;
+    bool        m_bEnableAdd=false;
+    bool        m_bEnableDelete=false;
     // ----------------------------------
     QString     m_PreSelected;
     // ----------------------------------

@@ -18,6 +18,7 @@
 #include <gui/widgets/home.hpp>
 
 #include <core/moneychanger.hpp>
+#include <core/handlers/focuser.h>
 
 #include <opentxs/client/OTAPI.hpp>
 #include <opentxs/client/OTAPI_Exec.hpp>
@@ -26,6 +27,7 @@
 #include <QDialog>
 #include <QKeyEvent>
 #include <QDebug>
+#include <QTimer>
 
 
 MTDetailEdit::MTDetailEdit(QWidget *parent) :
@@ -47,6 +49,21 @@ MTDetailEdit::~MTDetailEdit()
     delete ui;
 }
 
+
+bool MTDetailEdit::getAccountIDs(QString & qstrAssetAcctID, QString & qstrCurrencyAcctID)
+{
+    if (!m_pDetailPane)
+        return false;
+
+    MTEditDetails  & theDetailPane = *m_pDetailPane;
+    MTOfferDetails * pOfferDetails = qobject_cast<MTOfferDetails *>(&theDetailPane);
+
+    if (nullptr != pOfferDetails)
+    {
+        return pOfferDetails->getAccountIDs(qstrAssetAcctID, qstrCurrencyAcctID);
+    }
+    return false;
+}
 
 void MTDetailEdit::SetMarketMap(QMultiMap<QString, QVariant> & theMap)
 {
@@ -116,10 +133,19 @@ void MTDetailEdit::dialog(MTDetailEdit::DetailEditType theType, bool bIsModal/*=
     {
         this->installEventFilter(this);
 
-        show();
-        setFocus();
+        Focuser f(this);
+        f.show();
+        f.focus();
     }
-    // -------------------------------------------
+}
+
+// -------------------------------------------
+
+QWidget * MTDetailEdit::GetTab(int nTab)
+{
+    if (m_pTabWidget)
+        return m_pTabWidget->widget(nTab);
+    return nullptr;
 }
 
 // -------------------------------------------
@@ -179,6 +205,12 @@ void MTDetailEdit::FirstRun(MTDetailEdit::DetailEditType theType)
             connect(m_pDetailPane,      SIGNAL(newServerAdded(QString)),
                     m_pDetailPane,      SIGNAL(RefreshRecordsAndUpdateMenu()));
             // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(serversChanged()),
+                    Moneychanger::It(), SLOT  (onServersChanged()));
+            // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(serversChanged()),
+                    m_pDetailPane,      SIGNAL(RefreshRecordsAndUpdateMenu()));
+            // -------------------------------------------
             break;
 
         case MTDetailEdit::DetailEditTypeAsset:
@@ -188,6 +220,12 @@ void MTDetailEdit::FirstRun(MTDetailEdit::DetailEditType theType)
                     Moneychanger::It(), SLOT  (onNewAssetAdded(QString)));
             // -------------------------------------------
             connect(m_pDetailPane,      SIGNAL(newAssetAdded(QString)),
+                    m_pDetailPane,      SIGNAL(RefreshRecordsAndUpdateMenu()));
+            // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(assetsChanged()),
+                    Moneychanger::It(), SLOT  (onAssetsChanged()));
+            // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(assetsChanged()),
                     m_pDetailPane,      SIGNAL(RefreshRecordsAndUpdateMenu()));
             // -------------------------------------------
 
@@ -207,15 +245,43 @@ void MTDetailEdit::FirstRun(MTDetailEdit::DetailEditType theType)
         case MTDetailEdit::DetailEditTypeNym:
             m_pDetailPane = new MTNymDetails(this, *this);
             // -------------------------------------------
-            connect(m_pDetailPane,      SIGNAL(newNymAdded(QString)),
-                    Moneychanger::It(), SLOT  (onNewNymAdded(QString)));
+            connect(m_pDetailPane,      SIGNAL(newNymAdded(QString)),    // This also adds the new Nym as a Contact in the address book.
+                    Moneychanger::It(), SLOT  (onNewNymAdded(QString))); // (For convenience for the user.)
+            // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(newNymAdded(QString)), // Why do we do this, since we haven't actually done a check_nym?
+                    Moneychanger::It(), SLOT  (onCheckNym(QString))); // Because this upserts the new Nym's claims/verifications into the local DB.
             // -------------------------------------------
             connect(m_pDetailPane,      SIGNAL(newNymAdded(QString)),
                     m_pDetailPane,      SIGNAL(RefreshRecordsAndUpdateMenu()));
             // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(nymsChanged()),
+                    Moneychanger::It(), SLOT  (onNymsChanged()));
+            // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(nymsChanged()),
+                    m_pDetailPane,      SIGNAL(RefreshRecordsAndUpdateMenu()));
+            // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(nymWasJustChecked(QString)),
+                    Moneychanger::It(), SLOT  (onCheckNym(QString)));
+            // -------------------------------------------
+            connect(Moneychanger::It(), SIGNAL(claimsUpdatedForNym(QString)),
+                    m_pDetailPane,      SLOT  (onClaimsUpdatedForNym(QString)));
+            // -------------------------------------------
+            connect(m_pDetailPane, SIGNAL(appendToLog(QString)), Moneychanger::It(), SLOT(mc_showlog_slot(QString)));
+
             break;
 
-        case MTDetailEdit::DetailEditTypeContact:     m_pDetailPane = new MTContactDetails    (this, *this); break;
+        case MTDetailEdit::DetailEditTypeContact:
+            // -------------------------------------------
+            m_pDetailPane = new MTContactDetails(this, *this);
+            // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(nymWasJustChecked(QString)),
+                    Moneychanger::It(), SLOT  (onCheckNym(QString)));
+            // -------------------------------------------
+            connect(Moneychanger::It(), SIGNAL(claimsUpdatedForNym(QString)),
+                    m_pDetailPane,      SLOT  (onClaimsUpdatedForNym(QString)));
+            // -------------------------------------------
+            break;
+
         case MTDetailEdit::DetailEditTypeCorporation: m_pDetailPane = new MTCorporationDetails(this, *this); break;
         case MTDetailEdit::DetailEditTypeTransport:   m_pDetailPane = new TransportDetails    (this, *this); break;
 
@@ -263,6 +329,12 @@ void MTDetailEdit::FirstRun(MTDetailEdit::DetailEditType theType)
             connect(m_pDetailPane,      SIGNAL(newAccountAdded(QString)),
                     m_pDetailPane,      SIGNAL(RefreshRecordsAndUpdateMenu()));
             // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(accountsChanged()),
+                    Moneychanger::It(), SLOT  (onAccountsChanged()));
+            // -------------------------------------------
+            connect(m_pDetailPane,      SIGNAL(accountsChanged()),
+                    m_pDetailPane,      SIGNAL(RefreshRecordsAndUpdateMenu()));
+            // -------------------------------------------
             break;
 
         default:
@@ -292,6 +364,9 @@ void MTDetailEdit::FirstRun(MTDetailEdit::DetailEditType theType)
                 Moneychanger::It(), SLOT  (mc_show_account_slot(QString)));
         // -------------------------------------------
 
+//      connect(Moneychanger::It(), SIGNAL(expertModeUpdated(bool)), this, SLOT(onExpertModeUpdated(bool)));
+
+        // -------------------------------------------
         m_pDetailPane->SetOwnerPointer(*this);
         m_pDetailPane->SetEditType(theType);
         // -------------------------------------------
@@ -305,6 +380,8 @@ void MTDetailEdit::FirstRun(MTDetailEdit::DetailEditType theType)
         pTab1->setLayout(m_pDetailLayout);
 
         // ----------------------------------
+        m_pTabWidget->setTabBarAutoHide(true);
+
         int nCustomTabCount = m_pDetailPane->GetCustomTabCount();
 
         if (nCustomTabCount > 0)
@@ -348,6 +425,7 @@ void MTDetailEdit::FirstRun(MTDetailEdit::DetailEditType theType)
         m_pTabWidget->setVisible(false);
         // ----------------------------------
         m_bFirstRun = false;
+
     } // first run.
 }
 
@@ -357,13 +435,19 @@ void MTDetailEdit::onRefreshRecords()
     RefreshRecords();
 }
 
+void MTDetailEdit::onExpertModeUpdated(bool bExpertMode)
+{
+
+}
 
 void MTDetailEdit::showEvent(QShowEvent * event)
 {
     QWidget::showEvent(event);
 
-//    if (m_map.size() < 1)
-//        on_addButton_clicked();
+    if (m_map.size() < 1)
+    {
+        QTimer::singleShot(0, this, SLOT(on_addButton_clicked()));
+    }
 }
 
 //virtual
@@ -399,7 +483,7 @@ void MTDetailEdit::onMarketIDChangedFromAbove(QString qstrMarketID)
         {
             ++nIndex; // 0 on first iteration.
             // --------------------------------
-            if (it_markets.key() == qstrMarketID)
+            if (0 == it_markets.key().compare(qstrMarketID))
                 break;
         }
         // ------------------------------------------------------------
@@ -477,7 +561,7 @@ void MTDetailEdit::RefreshMarketCombo()
         QString OT_market_id   = ii.key();   // This is the marketID,scale
         QString OT_market_name = ii.value(); // This is the display name aka "Bitcoins for Silver Grams"
         // ------------------------------
-        if (!m_qstrMarketID.isEmpty() && (OT_market_id == m_qstrMarketID))
+        if (!m_qstrMarketID.isEmpty() && (0 == m_qstrMarketID.compare(OT_market_id)))
         {
             bFoundCurrentMarket = true;
             nCurrentMarketIndex = nIndex;
@@ -559,7 +643,7 @@ void MTDetailEdit::RefreshLawyerCombo()
         QString OT_lawyer_id   = ii.key();   // This is a nym ID.
         QString OT_lawyer_name = ii.value(); // This is the display name aka "Trader Bob"
         // ------------------------------
-        if (!m_qstrLawyerID.isEmpty() && (OT_lawyer_id == m_qstrLawyerID))
+        if (!m_qstrLawyerID.isEmpty() && (0 == m_qstrLawyerID.compare(OT_lawyer_id)))
         {
             bFoundCurrentLawyer = true;
             nCurrentLawyerIndex = nIndex;
@@ -748,7 +832,7 @@ void MTDetailEdit::RefreshRecords()
 
 //        qDebug() << QString("MTDetailEdit::RefreshRecords: Name: %1, ID: %2").arg(qstrValue, qstrID);
         // -------------------------------------
-        if (!m_PreSelected.isEmpty() && (m_PreSelected == qstrID))
+        if (!m_PreSelected.isEmpty() && (0 == m_PreSelected.compare(qstrID)))
             nPreselectedIndex = nIndex;
         // -------------------------------------
         QWidget * pWidget = NULL;
@@ -1072,7 +1156,6 @@ void MTDetailEdit::onSetNeedToRetrieveOfferTradeFlags()
         pMarketDetails->onSetNeedToRetrieveOfferTradeFlags();
     }
 }
-
 
 void MTDetailEdit::SetPreSelected(QString strSelected)
 {

@@ -82,6 +82,18 @@ QWidget * MTEditDetails::CreateCustomTab(int nTab)
     // -----------------------------
     return pReturnValue;
 }
+
+QWidget * MTEditDetails::GetTab(int nTab)
+{
+    QWidget * pReturn = nullptr;
+
+    if (!m_pOwner)
+        return nullptr;
+
+    pReturn = m_pOwner->GetTab(nTab);
+
+    return pReturn;
+}
 // ---------------------------------
 //virtual
 QString  MTEditDetails::GetCustomTabName(int nTab)
@@ -163,7 +175,8 @@ QWidget * MTEditDetails::CreateDetailHeaderWidget(MTDetailEdit::DetailEditType t
 //  currency_amount = strAmount;
 
     if (!bExternal && !strAmount.isEmpty() && (MTDetailEdit::DetailEditTypeAccount == theType))
-        currency_amount = QString("<small><font color=grey>%1:</font></small> %2").arg(tr("Balance")).arg(strAmount);
+        currency_amount = strAmount;
+//      currency_amount = QString("<small><font color=grey>%1:</font></small> %2").arg(tr("Balance")).arg(strAmount);
     else
         currency_amount = strAmount;
     // ----------------------------------------------------------------

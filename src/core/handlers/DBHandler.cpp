@@ -3,10 +3,16 @@
 #endif
 
 #include <core/handlers/DBHandler.hpp>
+#include <core/handlers/modeltradearchive.hpp>
+#include <core/handlers/modelmessages.hpp>
+#include <core/handlers/modelpayments.hpp>
 
 #include <opentxs/core/util/OTPaths.hpp>
 
 #include <QSqlRecord>
+#include <QSqlDriver>
+#include <QString>
+#include <QObject>
 
 #include <sstream>
 #include <stdexcept>
@@ -40,13 +46,14 @@ DBHandler::DBHandler()
     db = QSqlDatabase::addDatabase(dbDriverStr, dbConnNameStr);
     
     bool flag = isDbExist();
-    qDebug() << QString(opentxs::OTPaths::AppDataFolder().Get()) + dbFileNameStr;
+//    qDebug() << QString(opentxs::OTPaths::AppDataFolder().Get()) + dbFileNameStr;
     db.setDatabaseName( QString(opentxs::OTPaths::AppDataFolder().Get()) + dbFileNameStr);
     if(!dbConnect())
         qDebug() << "Error Opening Database";
     
-    if (!flag)
+//    if (!flag)  // The database now creates the tables if they don't exist, so we call this every time now.
     {
+        qDebug() << "Running dbCreateInstance";
         dbCreateInstance();
     }
 }
@@ -85,6 +92,7 @@ bool DBHandler::dbDisconnect()
 
 bool DBHandler::isDbExist()
 {
+    qDebug() << QString((opentxs::OTPaths::AppDataFolder().Get()) + dbFileNameStr);
     return dbFile.isFileExist(QString(opentxs::OTPaths::AppDataFolder().Get()) + dbFileNameStr);
 }
 
@@ -109,20 +117,20 @@ bool DBHandler::dbCreateInstance()
     {
         qDebug() << "Creating Tables";
 
-        QString address_book_create = "CREATE TABLE address_book (id INTEGER PRIMARY KEY, nym_id TEXT, nym_display_name TEXT)";
+        QString address_book_create = "CREATE TABLE IF NOT EXISTS address_book (id INTEGER PRIMARY KEY, nym_id TEXT, nym_display_name TEXT)";
         // --------------------------------------------
-        QString default_nym_create = "CREATE TABLE default_nym (default_id INTEGER PRIMARY KEY, nym TEXT)";
-        QString default_server_create = "CREATE TABLE default_server (default_id INTEGER PRIMARY KEY, server TEXT)";
-        QString default_asset_create = "CREATE TABLE default_asset (default_id INTEGER PRIMARY KEY, asset TEXT)";
-        QString default_account_create = "CREATE TABLE default_account (default_id INTEGER PRIMARY KEY, account TEXT)";
-        QString settings = "CREATE TABLE settings (setting TEXT PRIMARY KEY, parameter1 TEXT)";
+        QString default_nym_create = "CREATE TABLE IF NOT EXISTS default_nym (default_id INTEGER PRIMARY KEY, nym TEXT)";
+        QString default_server_create = "CREATE TABLE IF NOT EXISTS default_server (default_id INTEGER PRIMARY KEY, server TEXT)";
+        QString default_asset_create = "CREATE TABLE IF NOT EXISTS default_asset (default_id INTEGER PRIMARY KEY, asset TEXT)";
+        QString default_account_create = "CREATE TABLE IF NOT EXISTS default_account (default_id INTEGER PRIMARY KEY, account TEXT)";
+        QString settings = "CREATE TABLE IF NOT EXISTS settings (setting TEXT PRIMARY KEY, parameter1 TEXT)";
         // --------------------------------------------
-        QString create_contact = "CREATE TABLE contact(contact_id INTEGER PRIMARY KEY, contact_display_name TEXT)";
-        QString create_nym     = "CREATE TABLE nym(nym_id TEXT PRIMARY KEY, contact_id INTEGER, nym_display_name TEXT)";
-        QString create_server  = "CREATE TABLE nym_server(nym_id TEXT, notary_id TEXT, PRIMARY KEY(nym_id, notary_id))";
-        QString create_account = "CREATE TABLE nym_account(account_id TEXT PRIMARY KEY, notary_id TEXT, nym_id TEXT, asset_id TEXT, account_display_name TEXT)";
+        QString create_contact = "CREATE TABLE IF NOT EXISTS contact(contact_id INTEGER PRIMARY KEY, contact_display_name TEXT)";
+        QString create_nym     = "CREATE TABLE IF NOT EXISTS nym(nym_id TEXT PRIMARY KEY, contact_id INTEGER, nym_display_name TEXT, nym_payment_code TEXT)";
+        QString create_server  = "CREATE TABLE IF NOT EXISTS nym_server(nym_id TEXT, notary_id TEXT, PRIMARY KEY(nym_id, notary_id))";
+        QString create_account = "CREATE TABLE IF NOT EXISTS nym_account(account_id TEXT PRIMARY KEY, notary_id TEXT, nym_id TEXT, asset_id TEXT, account_display_name TEXT)";
         // --------------------------------------------
-        QString create_msg_method = "CREATE TABLE msg_method"
+        QString create_msg_method = "CREATE TABLE IF NOT EXISTS msg_method"
                 " (method_id INTEGER PRIMARY KEY,"   // 1, 2, etc.
                 "  method_display_name TEXT,"        // "Localhost"
                 "  method_type TEXT,"                // "bitmessage"
@@ -131,12 +139,274 @@ bool DBHandler::dbCreateInstance()
         // --------------------------------------------
         // Messaging methods set for various nyms or contacts.
         //
-        QString create_nym_method      = "CREATE TABLE nym_method(nym_id TEXT, method_id INTEGER, address TEXT, PRIMARY KEY(nym_id, method_id, address))";
-        QString create_contact_method  = "CREATE TABLE contact_method(contact_id INTEGER, method_type TEXT, address TEXT, PRIMARY KEY(contact_id, method_type, address))";
+        QString create_nym_method      = "CREATE TABLE IF NOT EXISTS nym_method(nym_id TEXT, method_id INTEGER, address TEXT, PRIMARY KEY(nym_id, method_id, address))";
+        QString create_contact_method  = "CREATE TABLE IF NOT EXISTS contact_method(contact_id INTEGER, method_type TEXT, address TEXT, PRIMARY KEY(contact_id, method_type, address))";
         // --------------------------------------------
-        // Smart Contracts
-        QString create_smart_contract  = "CREATE TABLE smart_contract(template_id INTEGER PRIMARY KEY, template_display_name TEXT, template_contents TEXT)";
+        // Smart Contracts table
+        QString create_smart_contract  = "CREATE TABLE IF NOT EXISTS smart_contract(template_id INTEGER PRIMARY KEY, template_display_name TEXT, template_contents TEXT)";
         // --------------------------------------------
+        // Passphrase Manager table
+        QString create_managed_passphrase  = "CREATE TABLE IF NOT EXISTS managed_passphrase"
+                "(passphrase_id INTEGER PRIMARY KEY,"
+                " passphrase_title TEXT,"
+                " passphrase_username TEXT,"
+                " passphrase_passphrase TEXT,"
+                " passphrase_url TEXT,"
+                " passphrase_notes TEXT"
+                ")";
+        // --------------------------------------------
+        // Trade Archive table
+        QString create_trade_archive  = "CREATE TABLE IF NOT EXISTS trade_archive"
+                "(is_bid INTEGER,"
+                " actual_price INTEGER,"
+                " scale INTEGER,"
+                " actual_paid INTEGER,"
+                " amount_purchased INTEGER,"
+                " timestamp INTEGER,"
+                " offer_id INTEGER,"
+                " receipt_id INTEGER,"
+                " notary_id TEXT,"
+                " nym_id TEXT,"
+                " asset_acct_id TEXT,"
+                " currency_acct_id TEXT,"
+                " asset_id TEXT,"
+                " currency_id TEXT,"
+                " asset_receipt TEXT,"
+                " currency_receipt TEXT,"
+                " final_receipt TEXT"
+                ")";
+        // --------------------------------------------
+        QString create_message_table = "CREATE TABLE IF NOT EXISTS message"
+               "(message_id INTEGER PRIMARY KEY,"
+               " have_read INTEGER,"
+               " have_replied INTEGER,"
+               " have_forwarded INTEGER,"
+               " subject TEXT,"
+               " sender_nym_id TEXT,"
+               " sender_address TEXT,"
+               " recipient_nym_id TEXT,"
+               " recipient_address TEXT,"
+               " timestamp INTEGER,"
+               " method_type TEXT,"
+               " method_type_display TEXT,"
+               " notary_id TEXT,"
+               " my_nym_id TEXT,"
+               " my_address TEXT,"
+               " folder INTEGER"
+               ")";
+        // --------------------------------------------
+        QString create_message_body_table = "CREATE TABLE IF NOT EXISTS message_body"
+               "(message_id INTEGER PRIMARY KEY,"
+               " body TEXT"
+               ")";
+        // --------------------------------------------
+        QString create_payment_table = "CREATE TABLE IF NOT EXISTS payment"
+               "(payment_id INTEGER PRIMARY KEY,"
+               " have_read INTEGER,"
+               " have_replied INTEGER,"
+               " have_forwarded INTEGER,"
+               " memo TEXT,"
+               " my_asset_type_id TEXT,"
+               " my_nym_id TEXT,"
+               " my_acct_id TEXT,"
+               " my_address TEXT,"
+               " description TEXT,"
+               " sender_nym_id TEXT,"
+               " sender_acct_id TEXT,"
+               " sender_address TEXT,"
+               " recipient_nym_id TEXT,"
+               " recipient_acct_id TEXT,"
+               " recipient_address TEXT,"
+               " amount INTEGER,"
+               " pending_found INTEGER,"
+               " completed_found INTEGER,"
+               " timestamp INTEGER,"
+               " txn_id INTEGER,"
+               " txn_id_display INTEGER,"
+               " method_type TEXT,"
+               " method_type_display TEXT,"
+               " notary_id TEXT,"
+               " record_name TEXT,"
+               " instrument_type TEXT,"
+               " folder INTEGER,"
+               " flags INTEGER"
+               ")";
+        // --------------------------------------------
+        QString create_payment_body_table = "CREATE TABLE IF NOT EXISTS payment_body"
+               "(payment_id INTEGER PRIMARY KEY,"
+               " pending_body TEXT,"
+               " body TEXT"
+               ")";
+        // --------------------------------------------
+        QString create_claim_table = "CREATE TABLE IF NOT EXISTS claim"
+               "(claim_id TEXT PRIMARY KEY,"
+               " claim_nym_id TEXT,"
+               " claim_section INTEGER,"
+               " claim_type INTEGER,"
+               " claim_value TEXT,"
+               " claim_start INTEGER,"
+               " claim_end INTEGER,"
+               " claim_attributes TEXT,"
+               " claim_att_active INTEGER,"
+               " claim_att_primary INTEGER"
+               ")";
+        // --------------------------------------------
+        QString create_claim_verification_table = "CREATE TABLE IF NOT EXISTS claim_verification"
+               "(ver_id TEXT PRIMARY KEY,"
+               " ver_claimant_nym_id TEXT,"
+               " ver_verifier_nym_id TEXT,"
+               " ver_claim_id TEXT,"
+               " ver_polarity INTEGER,"
+               " ver_start INTEGER,"
+               " ver_end INTEGER,"
+               " ver_signature TEXT,"
+               " ver_signature_verified INTEGER"
+               ")";
+        // --------------------------------------------
+
+        // Internal verifications are other Nym's claims that I have signed.
+        // External verifications are my claims that other Nyms have signed.
+
+        // External are only shown on my Nym Tab
+        // Internal are only shown on Contact tab.
+
+        // What you care about is that the signatures have been verified.
+
+        // Whenever you are displaying a claim, any verification related to that claim should be displayed,
+        // regardless of whether it's internal or external.
+
+
+        // Let's say you have made some claims, you have no external ones yet.
+        // You're looking at your own Nym and you don't see the verifications. Just maybe the implicit self-signed.
+        // I get your Nym and I verify your claims and publish them.
+        // At some point your Moneychanger has downloaded my latest verifications.
+        // On my credential, those verifications are on the internal side.
+        // As soon as your client has done a checkNym and noticed this,
+        // you should see those verifications on your own Nym.
+        // Now that you see there are verifications related to your claims, you should add those
+        // to your own credential, as external claims, and re-publish your credentials.
+
+        // We need a unique identifier for verifications because they can appear
+        // more than once for the same claim (from different people.)
+
+        // When Alice verified your claim, I might see that verification appear on Alice's
+        // credential, and on your credential, because you republished hers.
+
+        // A verification can either confirm or refute a claim.
+
+        // And the signature validity is either valid or unknown.
+
+        // Need to be able to search for claims based on claimant ID.
+
+        // Need to be able to search for verifications, filtered optionally on Claim ID and/or Verifier ID and/or Claimaint ID.
+
+        // Verification has its own ID, plus a Claimant ID, plus a Verifier ID, plus and Claim ID, plus a confirm/refute (polarity).
+
+        // Column for good signature, unknown signature, invalid. Column name: Validity.
+
+        // There is a start/end time but current unused.
+
+        // Table should have a "known valid" column so it can keep track of which ones it has validated.
+
+        // If someone refutes your claims you do not want to automatically republish that unless you are a troll.
+
+        // When looking at Nym details, I'll see my claims plus other people's verifications of those.
+
+        // When looking at Contact details, I'll see the contact's claims about himself, plus mine and other people's verifications of those claims.
+
+        // Repudiations are just a list of verification IDs. There's also the verifier/repudiator ID.
+
+        // In the UI I would show repudiated status on each verification.
+
+        // --------------------------------------------
+        // An agreement is an INSTANCE of a contract on a specific notary.
+        // (Such as a running payment plan, or a canceled smart contract.)
+        //
+        QString create_agreement_table = "CREATE TABLE IF NOT EXISTS agreement"
+               "(agreement_id INTEGER PRIMARY KEY," // Used purely behind the scenes, in order to make sure it's unique across notaries.
+               " have_read INTEGER," // If you receive any unread receipts, this gets set to false again.
+               " txn_id_display INTEGER," // If your UI says "final receipt #1168," this contains 1168. So 1168 identifies this INSTANCE of the agreement on the NOTARY for ALL parties involved.
+               " notary_id TEXT," // The notary where the agreement is instantiated. This, plus txn_id_display, is unique to identify the agreement. But the autonumber is easier to work with.
+               " contract_fingerprint TEXT," // the hash of the contract, or whatever fingerprinting technique is used.
+               " newest_receipt_id INTEGER," // Last known receiptNum for ANYTHING related to this agreement. (For any nym.)
+               " newest_known_state INTEGER," // 0 Error, 1 Paid, 2 Payment failed, 3 Contract not active.
+               " timestamp INTEGER," // Timestamp of the above newest_receipt_id.
+               " memo TEXT,"
+               " folder INTEGER" // 0 Payment Plan, 1 Smart Contract, 2 Entity
+               ")";
+        // --------------------------------------------
+        // So far this table is unused. Might remove.
+        QString create_agreement_nym_table = "CREATE TABLE IF NOT EXISTS agreement_nym"
+             "(agreement_id INTEGER,"
+             " nym_id TEXT,"
+             " nym_opening_txn_id INTEGER," // The Opening txn ID for my_nym (IF KNOWN)
+             " known_state INTEGER," // 0 Error, 1 Paid, 2 Payment failed, 3 Contract not active.
+             " last_receipt_id INTEGER," // Last receipt where ANYTHING happened for THIS NYM.
+             " timestamp INTEGER," // Timestamp of the above receipt.
+             " have_read INTEGER," // If you receive any unread receipts, this gets set to false again.
+             " last_paid_id INTEGER,"  // Last time this Nym PAID FUNDS, here's the receipt ID.
+             " last_collected_id INTEGER," // Last time this Nym COLLECTED FUNDS, here's the receipt ID.
+             " last_sent_id INTEGER,"  // Last time this Nym sent the agreement to someone, here's the receipt ID. (No funds changed hands.)
+             " last_received_id INTEGER,"  // Last time this Nym received the agreement from someone, here's the receipt ID. (No funds changed hands.)
+             " last_notice_id INTEGER," // Last time something happened where this Nym DIDN'T pay or collect. (Like activation notice, or pending incoming/outgoing, or final receipt.)
+             " activation_id INTEGER," // the receipt_id for this nym that shows the agreement being activated OR CANCELED (a form of activation that finishes the contract before it starts.)
+             " last_final_id INTEGER," // the latest known receipt_id that shows the agreement ending for this Nym. (There may be multiple notices, and final receipts, even for a single Nym. This just memorializes the most recent known one.)
+             " PRIMARY KEY(agreement_id, nym_id))";
+      // --------------------------------------------
+        // So far this table is unused. Might remove.
+        QString create_agreement_account_table = "CREATE TABLE IF NOT EXISTS agreement_account"
+             "(agreement_id INTEGER,"
+             " account_id TEXT,"
+             " account_nym_id TEXT,"
+             " account_notary_id TEXT,"
+             " account_asset_id TEXT,"
+             " last_receipt_id INTEGER," // Last receipt where ANYTHING happened for THIS ACCOUNT.
+             " timestamp INTEGER," // Timestamp of the above receipt.
+             " last_paid_id INTEGER,"  // Last time this account PAID FUNDS, here's the receipt ID.
+             " last_collected_id INTEGER," // Last time this account COLLECTED FUNDS, here's the receipt ID.
+             " final_receipt_id INTEGER," // the ID for the final receipt for this account. (IF KNOWN)
+             " PRIMARY KEY(agreement_id, account_id))";
+      // --------------------------------------------
+        // Individual receipts / notices for any given agreement.
+        QString create_agreement_receipt_table  = "CREATE TABLE IF NOT EXISTS agreement_receipt"
+                "(agreement_receipt_key INTEGER PRIMARY KEY,"
+                " agreement_id INTEGER,"
+                " receipt_id INTEGER," // NOTE: for final receipts, we MUST use the closing ID here, since the "transaction ID" should really go into the event ID field. The closing ID is the only ID on a final receipt that's unique. (And even that is only unique to a notary, not globally. That's why we have the agreement_receipt_key in our local DB.)
+                " timestamp INTEGER," // Timestamp on this receipt.
+                " have_read INTEGER,"
+                " txn_id_display INTEGER,"
+                " event_id INTEGER," // Unused. In the future we might have an EVENT that generates, say, 4 receipts to different Nyms and different Accounts. They'd all be different receipts, for different transactions, and different nyms, but for the SAME EVENT.
+                " memo TEXT,"
+                " my_asset_type_id TEXT,"
+                " my_nym_id TEXT,"
+                " my_acct_id TEXT,"
+                " my_address TEXT,"
+                " sender_nym_id TEXT,"
+                " sender_acct_id TEXT,"
+                " sender_address TEXT,"
+                " recipient_nym_id TEXT,"
+                " recipient_acct_id TEXT,"
+                " recipient_address TEXT,"
+                " amount INTEGER," // May be zero. Notices, for exmaple, don't have an amount.
+                " folder INTEGER," // 0 is Sent, 1 is Received.
+                " method_type TEXT,"
+                " method_type_display TEXT,"
+                " notary_id TEXT,"
+                " description TEXT,"
+                " record_name TEXT,"
+                " instrument_type TEXT,"
+                " flags INTEGER"
+                ")";
+        // --------------------------------------------
+        QString create_receipt_body_table = "CREATE TABLE IF NOT EXISTS receipt_body"
+               "(agreement_receipt_key INTEGER PRIMARY KEY,"
+               " body TEXT"
+               ")";
+        // --------------------------------------------
+        // RPC User Manager
+        QString create_rpcusers_table = "CREATE TABLE IF NOT EXISTS rpc_users(user_id TEXT PRIMARY KEY, password TEXT)";
+
+
         /* Keep track of Namecoin names registered for the purpose of
            Moneychanger.  They are always related to a Nym and credential
            hash, so those are kept here, too, so we can easily find
@@ -148,7 +418,7 @@ bool DBHandler::dbCreateInstance()
            transaction ID of the last name_update that has been issued,
            mainly to keep track of still unconfirmed update transactions
            (after the first confirmation, we can find it via the name).  */
-        QString create_nmc = "CREATE TABLE nmc_names"
+        QString create_nmc = "CREATE TABLE IF NOT EXISTS nmc_names"
                              "  (name     TEXT PRIMARY KEY,"
                              "   nym      TEXT,"
                              "   cred     TEXT,"
@@ -172,16 +442,34 @@ bool DBHandler::dbCreateInstance()
         error += query.exec(create_nym_method);
         error += query.exec(create_contact_method);
         error += query.exec(create_smart_contract);
+        error += query.exec(create_managed_passphrase);
+        error += query.exec(create_trade_archive);
+        error += query.exec(create_message_table);
+        error += query.exec(create_message_body_table);
+        error += query.exec(create_payment_table);
+        error += query.exec(create_payment_body_table);
+        // ------------------------------------------
+        error += query.exec(create_claim_table);
+        error += query.exec(create_claim_verification_table);
+        // ------------------------------------------
+        error += query.exec(create_rpcusers_table);
+        // ------------------------------------------
+        error += query.exec(create_agreement_table);
+        error += query.exec(create_agreement_nym_table);
+        error += query.exec(create_agreement_account_table);
+        error += query.exec(create_agreement_receipt_table);
+        error += query.exec(create_receipt_body_table);
         // ------------------------------------------
         error += query.exec(create_nmc);
         // ------------------------------------------
-        if(error != 15)  //every query passed?
+        if (error != 29)  // Every query passed?
         {
-            qDebug() << "dbCreateInstance Error: " << dbConnectErrorStr + " " + dbCreationStr;
-            FileHandler rm;
+            qDebug() << "dbCreateInstance exec count: " << error << ": ErrorStr: "
+                     << dbConnectErrorStr + "--" + dbCreationStr;
+//            FileHandler rm;
             db.close();
 
-            rm.removeFile(QString(opentxs::OTPaths::AppDataFolder().Get()) + dbFileNameStr);
+//          rm.removeFile(QString(opentxs::OTPaths::AppDataFolder().Get()) + dbFileNameStr);
 //          rm.removeFile(QCoreApplication::applicationDirPath() + dbFileNameStr);
         }
         else
@@ -190,14 +478,385 @@ bool DBHandler::dbCreateInstance()
     return error;
 }
 
+// Unused for now, but too much work to just throw away:
+//    QString qstrQuery(
+//                "SELECT contact.contact_id as contact_id, contact.contact_display_name as contact_display_name,"
+//                " msg_method.method_type as method_type, msg_method.method_type_display as method_type_display,"
+//                " contact_method.address as address"
+//                " FROM contact, msg_method, contact_method"
+//                " WHERE contact.contact_id = contact_method.contact_id"
+//                " AND msg_method.method_type = contact_method.method_type"
+//                );
+
+
+//QPointer<ModelClaims> getClaimsModel(int nContactId);
+//QPointer<ModelClaims> getClaimsModel(const QString & qstrNymId);
+
+static void setup_claims_model(QPointer<ModelClaims> & pClaimsModel)
+{
+    if ( pClaimsModel->lastError().isValid())
+        qDebug() <<  pClaimsModel->lastError();
+
+    int column = 0;
+
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("claim_id"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("Nym"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("Section"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("Type"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("Value"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("Start"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("End"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("Attributes"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("Active"));
+    pClaimsModel->setHeaderData(column++, Qt::Horizontal, QObject::tr("Primary"));
+}
+
+QPointer<ModelClaims> DBHandler::getClaimsModel(const QString & qstrNymId)
+{
+    QPointer<ModelClaims> pClaimsModel = new ModelClaims(0);
+
+    pClaimsModel->setQuery(QString("SELECT * FROM `claim` WHERE `claim_nym_id`='%1'").arg(qstrNymId), db);
+
+    setup_claims_model(pClaimsModel);
+
+    return pClaimsModel;
+}
+
+QPointer<ModelClaims> DBHandler::getClaimsModel(int nContactId)
+{
+    QPointer<ModelClaims> pClaimsModel = new ModelClaims(0);
+
+    QString str_select = QString("SELECT * "         // Select all rows...
+                                 "FROM `claim` "     // ...from the claim table...
+                                 "INNER JOIN `nym` " // ...where it matches the 'nym' table...
+                                 "ON nym.nym_id=claim.claim_nym_id " // ...on the claim_nym_id column.
+                                 "WHERE nym.contact_id='%1'"). //(So we only see claims that are attached to a specific contact.)
+                                 arg(nContactId);
+
+    pClaimsModel->setQuery(str_select, db);
+
+    setup_claims_model(pClaimsModel);
+
+    return pClaimsModel;
+}
+
+
+// The first case where I want to use this, is when looking at a Contact's
+// Relationships, I want to grab every claim where someone claims to know
+// that Contact (claims to know one of his Nyms.)
+//
+QPointer<ModelClaims> DBHandler::getRelationshipClaims(int nAboutContactId)
+{
+    QPointer<ModelClaims> pClaimsModel = new ModelClaims(0);
+
+    QString str_select = QString("SELECT * "         // Select all rows...
+                                 "FROM `claim` "     // ...from the claim table...
+                                 "INNER JOIN `nym` " // ...where it matches the 'nym' table...
+                                 "ON nym.nym_id=claim.claim_value " // ...on the claim_value column. (If you have a relationship about
+                                                                    // a Nym, then his NymId will be in your claim_value field.)
+                                 "WHERE nym.contact_id='%1' AND " // (So we only see claims that are attached to a specific contact.)
+                                 " claim_section=%2").
+                                 arg(nAboutContactId).arg(opentxs::proto::CONTACTSECTION_RELATIONSHIPS);
+
+    pClaimsModel->setQuery(str_select, db);
+
+    setup_claims_model(pClaimsModel);
+
+    return pClaimsModel;
+}
+
+
+QPointer<ModelClaims> DBHandler::getRelationshipClaims(const QString & qstrAboutNymId)
+{
+    QPointer<ModelClaims> pClaimsModel = new ModelClaims(0);
+
+
+    pClaimsModel->setQuery(QString("SELECT * FROM `claim` WHERE `claim_value`='%1' AND `claim_section`=%2").
+                           arg(qstrAboutNymId).arg(opentxs::proto::CONTACTSECTION_RELATIONSHIPS),
+                           db);
+
+    setup_claims_model(pClaimsModel);
+
+    return pClaimsModel;
+}
+
+
+QPointer<ModelAgreements> DBHandler::getAgreementModel()
+{
+    QString tableName("agreement");
+
+    if (!pAgreementModel_)
+    {
+        pAgreementModel_ = new ModelAgreements(0, db);
+
+        pAgreementModel_->setTable(tableName);
+        pAgreementModel_->setEditStrategy(QSqlTableModel::OnManualSubmit);
+
+        pAgreementModel_->select();
+//        pAgreementModel_->sort(PMNT_SOURCE_COL_TIMESTAMP, Qt::DescendingOrder);
+
+        if ( pAgreementModel_->lastError().isValid())
+            qDebug() <<  pAgreementModel_->lastError();
+
+        int column = 0;
+
+        // NOTE: These header names will change.
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("agreement_id"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Read?"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Txn #"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Notary"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Contract ID"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Newest Receipt #"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Status"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Timestamp"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Memo"));
+        pAgreementModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Folder"));
+    }
+
+    return pAgreementModel_;
+}
+
+
+QPointer<ModelAgreementReceipts> DBHandler::getAgreementReceiptModel()
+{
+    QString tableName("agreement_receipt");
+
+    if (!pAgreementReceiptModel_)
+    {
+        pAgreementReceiptModel_ = new ModelAgreementReceipts(0, db);
+
+        pAgreementReceiptModel_->setTable(tableName);
+        pAgreementReceiptModel_->setEditStrategy(QSqlTableModel::OnManualSubmit);
+
+        pAgreementReceiptModel_->select();
+//        pAgreementReceiptModel_->sort(PMNT_SOURCE_COL_TIMESTAMP, Qt::DescendingOrder);
+
+        if ( pAgreementReceiptModel_->lastError().isValid())
+            qDebug() <<  pAgreementReceiptModel_->lastError();
+
+        int column = 0;
+
+        // NOTE: These header names will change.
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Details"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("agreement_id"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("receipt_id"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Timestamp"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Read?"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("txn_id_display"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("event_id"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Memo"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Asset type"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Me"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("My account"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("My address"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("From"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("From account"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("From address"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("To"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("To account"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("To address"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Amount"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Folder"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("method_type"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Transport"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Notary"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Description"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("record_name"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Instrument"));
+        pAgreementReceiptModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("flags"));
+    }
+
+    return pAgreementReceiptModel_;
+}
+
+
+QPointer<ModelPayments> DBHandler::getPaymentModel()
+{
+    QString tableName("payment");
+
+    if (!pPaymentModel_)
+    {
+        pPaymentModel_ = new ModelPayments(0, db);
+
+        pPaymentModel_->setTable(tableName);
+        pPaymentModel_->setEditStrategy(QSqlTableModel::OnManualSubmit);
+
+        pPaymentModel_->select();
+//        pPaymentModel_->sort(PMNT_SOURCE_COL_TIMESTAMP, Qt::DescendingOrder);
+
+
+        if ( pPaymentModel_->lastError().isValid())
+            qDebug() <<  pPaymentModel_->lastError();
+
+        int column = 0;
+
+        // NOTE: These header names will change.
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Details"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Read?"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr(" ")); //replied
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr(" ")); // forwarded
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Memo"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Asset type"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Me"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("My account"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("My address"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Description"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("From"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("From account"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("From address"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("To"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("To account"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("To address"));
+
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Amount"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("pending_found"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("completed_found"));
+
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Timestamp"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Txn#"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("txn_id_display"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("method_type"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Transport"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Notary"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("record_name"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Instrument"));
+        pPaymentModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Folder"));
+    }
+
+    return pPaymentModel_;
+}
+
+QPointer<ModelMessages> DBHandler::getMessageModel()
+{
+    QString tableName("message");
+
+    if (!pMessageModel_)
+    {
+        pMessageModel_ = new ModelMessages(0, db);
+
+        pMessageModel_->setTable(tableName);
+        pMessageModel_->setEditStrategy(QSqlTableModel::OnManualSubmit);
+
+        pMessageModel_->select();
+//        pMessageModel_->sort(MSG_SOURCE_COL_TIMESTAMP, Qt::DescendingOrder);
+
+
+        if ( pMessageModel_->lastError().isValid())
+            qDebug() <<  pMessageModel_->lastError();
+
+        int column = 0;
+
+        // NOTE: These header names will change.
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("message_id"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Read?"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr(" ")); //replied
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr(" ")); // forwarded
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Subject"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("From"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("From address"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("To"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("To address"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Timestamp"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("method_type"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Transport"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Notary"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Me"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("My address"));
+        pMessageModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Folder"));
+    }
+
+    return pMessageModel_;
+}
+
+/*
+SELECT contact.contact_id as contact_id, contact.contact_display_name as contact_display_name,
+ msg_method.method_type as method_type, msg_method.method_type_display as method_type_display,
+ contact_method.address as address
+ FROM contact, msg_method, contact_method
+ WHERE contact.contact_id = contact_method.contact_id
+ AND msg_method.method_type = contact_method.method_type
+*/
+
+// --------------------------------------------
+// contact(contact_id INTEGER PRIMARY KEY, contact_display_name TEXT)";
+// --------------------------------------------
+// msg_method"
+//        " (method_id INTEGER PRIMARY KEY,"   // 1, 2, etc.
+//        "  method_display_name TEXT,"        // "Localhost"
+//        "  method_type TEXT,"                // "bitmessage"
+//        "  method_type_display TEXT,"        // "Bitmessage"
+//        "  method_connect TEXT)";            // "http://username:password@http://127.0.0.1:8332/"
+// --------------------------------------------
+//  contact_method(contact_id INTEGER, method_type TEXT, address TEXT, PRIMARY KEY(contact_id, method_type, address))";
+// --------------------------------------------
+
+
+QPointer<ModelTradeArchive> DBHandler::getTradeArchiveModel()
+{
+    QString tableName("trade_archive");
+
+    if (!pTradeArchiveModel_)
+    {                
+        pTradeArchiveModel_ = new ModelTradeArchive(0, db);
+
+        pTradeArchiveModel_->setTable(tableName);
+        pTradeArchiveModel_->setEditStrategy(QSqlTableModel::OnManualSubmit);
+        pTradeArchiveModel_->select();
+
+        if ( pTradeArchiveModel_->lastError().isValid())
+            qDebug() <<  pTradeArchiveModel_->lastError();
+
+        int column = 0;
+
+        // NOTE: These header names will change.
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Bid / Ask")); // is_bid
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Final Price")); // actual_price
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Per Scale"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Total Price")); // actual_paid
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("for Asset Amount")); // amount_purchased
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Timestamp"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Offer#"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Receipt#"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Notary"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Identity"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Asset Account"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Currency Account"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Asset Type"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Currency Type"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Asset Receipt"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Currency Receipt"));
+        pTradeArchiveModel_->setHeaderData(column++, Qt::Horizontal, QObject::tr("Final Receipt"));
+         // --------------------------------------------
+    }
+
+    return pTradeArchiveModel_;
+}
+
+
 bool DBHandler::isConnected()
 {
     return db.isOpen();
 }
 
+QString DBHandler::PreparedQuery::lastQuery()
+{
+    return query.lastQuery();
+}
+
 DBHandler::PreparedQuery* DBHandler::prepareQuery(const QString& run)
 {
   return new PreparedQuery (db, run);
+}
+
+
+QString DBHandler::formatValue(QSqlField & sqlField)
+{
+    QMutexLocker locker(&dbMutex);
+
+    if (!db.isOpen ())
+      return "";
+
+    return db.driver()->formatValue(sqlField);
 }
 
 bool DBHandler::runQuery(PreparedQuery* query)
